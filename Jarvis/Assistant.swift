@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import Combine
+import UIKit
 
 /// Dinle → sunucuya sor → işlemleri telefonda uygula → sesli cevap ver.
 @MainActor
@@ -27,36 +28,129 @@ final class Assistant: ObservableObject {
             .store(in: &cancellables)
     }
 
-    // MARK: Dinleme
+    // MARK: Sohbet modu
+    //
+    // "Hey Siri, Jarvis" ya da reaktöre dokunuş → sürekli dinler, sözünü kesmez.
+    // Söylenenler not olarak birikir; "bitti" → hepsini işler; "Jarvis kapan" → işler ve kapanır.
+    // Soru sorulursa hemen sesli cevap verir, sonra dinlemeye devam eder.
 
+    /// Sohbet açık mı (mikrofon o an kapalı olsa bile: düşünürken/konuşurken)
+    @Published private(set) var conversing = false
+    /// Söylenmiş ama "bitti" denmediği için henüz işlenmemiş cümleler
+    @Published private(set) var pendingNotes: [String] = []
+
+    private var closeAfterReply = false
+    private var idleTask: Task<Void, Never>?
+    private let idleLimit: UInt64 = 120   // sn — hiç konuşulmazsa kapanır
+
+    /// Reaktöre dokunuş
     func toggleListening() {
+        if !conversing {
+            startConversation()
+            return
+        }
         switch phase {
-        case .listening:
-            speech.stopListening()
         case .speaking:
-            speech.stopSpeaking()
-            phase = .idle
+            speech.stopSpeaking()          // susturur; akış dinlemeye döner
         case .thinking:
             break
-        case .idle:
-            startListening()
+        case .listening, .idle:
+            // Dokununca: yarım cümleyi de al, bekleyenleri işle ve kapan
+            let partial = speech.partialText.trimmingCharacters(in: .whitespacesAndNewlines)
+            speech.stopMic()
+            if !partial.isEmpty { pendingNotes.append(VoiceCommand.parse(partial).body) }
+            finish(close: true)
         }
     }
 
-    func startListening() {
+    /// Siri / Kısayol / ekrandan
+    func startListening() { if !conversing { startConversation() } }
+
+    func startConversation() {
         errorText = nil
         Task {
             guard await speech.requestPermissions() else {
                 errorText = "Mikrofon ve konuşma tanıma izni gerekiyor. Ayarlar → Jarvis'ten açabilirsiniz."
                 return
             }
-            phase = .listening
-            speech.startListening { [weak self] text in
-                guard let self else { return }
-                self.phase = .idle
-                if !text.isEmpty { self.send(text) }
+            speech.stopSpeaking()
+            conversing = true
+            closeAfterReply = false
+            pendingNotes = []
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            openMic()
+        }
+    }
+
+    func endConversation() {
+        idleTask?.cancel()
+        speech.stopMic()
+        conversing = false
+        closeAfterReply = false
+        if phase != .thinking && phase != .speaking { phase = .idle }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    private func openMic() {
+        guard conversing else { return }
+        phase = .listening
+        let ok = speech.startMic { [weak self] segment in
+            self?.handleSegment(segment)
+        }
+        if !ok {
+            errorText = "Mikrofon başlatılamadı. Lütfen tekrar deneyin."
+            endConversation()
+            return
+        }
+        armIdleTimer()
+    }
+
+    private func armIdleTimer() {
+        idleTask?.cancel()
+        let limit = idleLimit
+        idleTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: limit * 1_000_000_000)
+            guard !Task.isCancelled, let self, self.conversing, self.phase == .listening else { return }
+            self.finish(close: true)
+        }
+    }
+
+    private func handleSegment(_ segment: String) {
+        guard conversing else { return }
+        armIdleTimer()
+        let parsed = VoiceCommand.parse(segment)
+        switch parsed.end {
+        case .close:
+            if !parsed.body.isEmpty { pendingNotes.append(parsed.body) }
+            finish(close: true)
+        case .done:
+            if !parsed.body.isEmpty { pendingNotes.append(parsed.body) }
+            finish(close: false)
+        case .none:
+            if VoiceCommand.isQuestion(parsed.body) {
+                send(parsed.body)            // soruya hemen cevap; bekleyen notlar durur
+            } else {
+                pendingNotes.append(parsed.body)
+                UISelectionFeedbackGenerator().selectionChanged()
             }
         }
+    }
+
+    /// Bekleyen notları işle. close: sonra sohbeti kapat.
+    private func finish(close: Bool) {
+        let text = pendingNotes.joined(separator: " ")
+        pendingNotes = []
+        if text.isEmpty {
+            if close {
+                speech.stopMic()
+                conversing = false
+                phase = .speaking
+                speech.speak("Görüşmek üzere.") { [weak self] in self?.phase = .idle }
+            }
+            return
+        }
+        closeAfterReply = close
+        send(text)
     }
 
     // MARK: Gönder
@@ -67,6 +161,10 @@ final class Assistant: ObservableObject {
         errorText = nil
         lastRoute = nil
         store.messages.append(ChatMessage(role: .user, text: text))
+        if conversing {
+            idleTask?.cancel()
+            speech.stopMic()                 // Jarvis konuşurken kendini duymasın
+        }
 
         guard settings.isConfigured else {
             reply("Önce Ayarlar'dan sunucu adresini ve uygulama şifresini girmen gerekiyor.", speak: true)
@@ -82,11 +180,10 @@ final class Assistant: ObservableObject {
                     if let note = await apply(action) { extras.append(note) }
                 }
                 let full = ([response.reply] + extras).filter { !$0.isEmpty }.joined(separator: " ")
-                reply(full, speak: settings.speakReplies)
+                reply(full, speak: conversing || settings.speakReplies)
             } catch {
-                phase = .idle
                 errorText = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                reply("Şu anda sunucuya ulaşamıyorum. İnternet bağlantını ya da Ayarlar'daki sunucu bilgisini kontrol eder misin?", speak: settings.speakReplies)
+                reply("Şu anda sunucuya ulaşamıyorum. İnternet bağlantını ya da Ayarlar'daki sunucu bilgisini kontrol eder misin?", speak: conversing || settings.speakReplies)
             }
         }
     }
@@ -95,10 +192,19 @@ final class Assistant: ObservableObject {
         store.messages.append(ChatMessage(role: .assistant, text: text))
         if speak {
             phase = .speaking
-            speech.speak(text) { [weak self] in
-                if self?.phase == .speaking { self?.phase = .idle }
-            }
+            speech.speak(text) { [weak self] in self?.afterReply() }
         } else {
+            afterReply()
+        }
+    }
+
+    /// Cevap bitti: sohbet sürüyorsa yeniden dinle, "kapan" denmişse kapat.
+    private func afterReply() {
+        if conversing && !closeAfterReply {
+            openMic()
+        } else {
+            if conversing { endConversation() }
+            closeAfterReply = false
             phase = .idle
         }
     }

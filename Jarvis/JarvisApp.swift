@@ -33,11 +33,10 @@ struct JarvisApp: App {
 enum Theme {
     static let accent = Color(red: 0.25, green: 0.65, blue: 1.0)
     static let glow = Color(red: 0.35, green: 0.78, blue: 1.0)
-    static let background = LinearGradient(
-        colors: [Color(red: 0.03, green: 0.05, blue: 0.10), Color(red: 0.01, green: 0.02, blue: 0.05)],
-        startPoint: .top, endPoint: .bottom
-    )
-    static let card = Color.white.opacity(0.06)
+    /// Diğer sekmeler için sakin arka plan
+    static var background: some View { JarvisBackground(focus: .init(x: 0.5, y: 0.0), intensity: 0.6) }
+    static let card = Color(red: 0.06, green: 0.12, blue: 0.20).opacity(0.55)
+    static let cardStroke = Color(red: 0.35, green: 0.78, blue: 1.0).opacity(0.18)
 
     static func color(for p: Priority) -> Color {
         switch p {

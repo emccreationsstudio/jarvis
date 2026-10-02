@@ -1,4 +1,5 @@
 import AppIntents
+import UIKit
 
 /// "Hey Siri, Jarvis" · Kısayollar · Arkaya Dokunma → uygulama açılır ve dinlemeye başlar
 struct ListenIntent: AppIntent {
@@ -9,6 +10,14 @@ struct ListenIntent: AppIntent {
     @MainActor
     func perform() async throws -> some IntentResult {
         Assistant.shared.listenRequested = true
+        // Uygulama zaten açıksa da tetiklensin
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            if Assistant.shared.listenRequested, UIApplication.shared.applicationState == .active {
+                Assistant.shared.listenRequested = false
+                Assistant.shared.startListening()
+            }
+        }
         return .result()
     }
 }

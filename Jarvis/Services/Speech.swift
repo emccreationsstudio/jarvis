@@ -2,7 +2,22 @@ import Foundation
 import Speech
 import AVFoundation
 
-/// Türkçe konuşmayı yazıya çevirir (cihaz üzerinde, ücretsiz) ve cevapları sesli okur.
+/// Mikrofondan gelen sesi tanıma isteğine aktaran, iş parçacığı güvenli küçük kutu.
+/// (Ses motoru kendi iş parçacığında çalışır; tanıma isteği oturum boyunca yenilenir.)
+final class BufferSink: @unchecked Sendable {
+    private let lock = NSLock()
+    private var request: SFSpeechAudioBufferRecognitionRequest?
+
+    func set(_ r: SFSpeechAudioBufferRecognitionRequest?) {
+        lock.lock(); request = r; lock.unlock()
+    }
+    func append(_ b: AVAudioPCMBuffer) {
+        lock.lock(); request?.append(b); lock.unlock()
+    }
+}
+
+/// Türkçe konuşmayı sürekli dinler (cihaz üzerinde) ve her duraksamada söyleneni parça olarak bildirir.
+/// Cevapları sesli okur.
 @MainActor
 final class SpeechService: NSObject, ObservableObject {
     @Published private(set) var isListening = false
@@ -10,14 +25,17 @@ final class SpeechService: NSObject, ObservableObject {
     @Published private(set) var partialText = ""
     @Published private(set) var level: Float = 0
 
+    /// Bu kadar sessizlik olunca söylenen bir "parça" sayılır
+    var pauseInterval: TimeInterval = 1.8
+
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "tr-TR"))
     private let engine = AVAudioEngine()
+    private let sink = BufferSink()
     private var request: SFSpeechAudioBufferRecognitionRequest?
-    private var task: SFSpeechRecognitionTask?
-    private var silenceTimer: Timer?
-    private var maxTimer: Timer?
-    private var onFinish: ((String) -> Void)?
-    private var finished = false
+    private var recogTask: SFSpeechRecognitionTask?
+    private var pauseTimer: Timer?
+    private var generation = 0
+    private var onSegment: ((String) -> Void)?
 
     private let synth = AVSpeechSynthesizer()
     private var speakDone: (() -> Void)?
@@ -37,103 +55,123 @@ final class SpeechService: NSObject, ObservableObject {
         return speechOK && micOK
     }
 
-    // MARK: Dinleme
+    // MARK: Sürekli dinleme
 
-    func startListening(onFinish: @escaping (String) -> Void) {
-        stopSpeaking()
-        guard !isListening else { return }
-        guard let recognizer, recognizer.isAvailable else {
-            onFinish("")
-            return
-        }
-        self.onFinish = onFinish
-        finished = false
-        partialText = ""
+    /// Mikrofonu açar. Her duraksamada `onSegment` söylenen cümleyle çağrılır.
+    @discardableResult
+    func startMic(onSegment: @escaping (String) -> Void) -> Bool {
+        self.onSegment = onSegment
+        guard !isListening else { return true }
+        guard let recognizer, recognizer.isAvailable else { return false }
 
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playAndRecord, mode: .measurement, options: [.duckOthers, .defaultToSpeaker, .allowBluetoothA2DP])
+            try session.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .defaultToSpeaker, .allowBluetoothA2DP])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
-
-            let req = SFSpeechAudioBufferRecognitionRequest()
-            req.shouldReportPartialResults = true
-            req.addsPunctuation = true
-            if recognizer.supportsOnDeviceRecognition { req.requiresOnDeviceRecognition = true }
-            request = req
 
             let input = engine.inputNode
             let format = input.outputFormat(forBus: 0)
             input.removeTap(onBus: 0)
+            let sink = self.sink
             input.installTap(onBus: 0, bufferSize: 1024, format: format) { @Sendable [weak self] buffer, _ in
-                req.append(buffer)
-                let lvl = Self.rms(buffer)
+                sink.append(buffer)
+                let lvl = SpeechService.rms(buffer)
                 Task { @MainActor in self?.level = lvl }
             }
             engine.prepare()
             try engine.start()
             isListening = true
-
-            task = recognizer.recognitionTask(with: req) { @Sendable [weak self] result, error in
-                Task { @MainActor in
-                    guard let self else { return }
-                    if let result {
-                        self.partialText = result.bestTranscription.formattedString
-                        self.resetSilenceTimer()
-                        if result.isFinal { self.finish() }
-                    }
-                    if error != nil { self.finish() }
-                }
-            }
-
-            // Hiç konuşulmazsa 6 sn, toplamda en fazla 30 sn
-            silenceTimer = Timer.scheduledTimer(withTimeInterval: 6, repeats: false) { [weak self] _ in
-                Task { @MainActor in self?.finish() }
-            }
-            maxTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self] _ in
-                Task { @MainActor in self?.finish() }
-            }
+            startRecognition()
+            return true
         } catch {
-            cleanup()
-            onFinish("")
+            stopMic()
+            return false
         }
     }
 
-    /// Kullanıcı düğmeye tekrar basınca: söylenenle bitir
-    func stopListening() {
-        finish()
-    }
-
-    private func resetSilenceTimer() {
-        silenceTimer?.invalidate()
-        silenceTimer = Timer.scheduledTimer(withTimeInterval: 1.6, repeats: false) { [weak self] _ in
-            Task { @MainActor in self?.finish() }
-        }
-    }
-
-    private func finish() {
-        guard !finished else { return }
-        finished = true
-        let text = partialText.trimmingCharacters(in: .whitespacesAndNewlines)
-        cleanup()
-        let cb = onFinish
-        onFinish = nil
-        cb?(text)
-    }
-
-    private func cleanup() {
-        silenceTimer?.invalidate(); silenceTimer = nil
-        maxTimer?.invalidate(); maxTimer = nil
+    /// Mikrofonu kapatır (ör. Jarvis konuşurken kendini duymasın diye). Yarım kalan söz atılır.
+    func stopMic() {
+        pauseTimer?.invalidate(); pauseTimer = nil
+        generation += 1
         if engine.isRunning { engine.stop() }
         engine.inputNode.removeTap(onBus: 0)
+        sink.set(nil)
         request?.endAudio()
-        task?.cancel()
+        recogTask?.cancel()
         request = nil
-        task = nil
+        recogTask = nil
         isListening = false
+        partialText = ""
         level = 0
     }
 
-    nonisolated private static func rms(_ buffer: AVAudioPCMBuffer) -> Float {
+    /// Şu ana kadar söyleneni hemen parça olarak bildir (duraksamayı beklemeden).
+    func flush() {
+        guard isListening else { return }
+        emitSegment()
+    }
+
+    private func startRecognition() {
+        guard let recognizer else { return }
+        generation += 1
+        let gen = generation
+        recogTask?.cancel()
+        request?.endAudio()
+
+        let req = SFSpeechAudioBufferRecognitionRequest()
+        req.shouldReportPartialResults = true
+        req.addsPunctuation = true
+        if recognizer.supportsOnDeviceRecognition { req.requiresOnDeviceRecognition = true }
+        request = req
+        sink.set(req)
+        partialText = ""
+
+        recogTask = recognizer.recognitionTask(with: req) { @Sendable [weak self] result, error in
+            let text = result?.bestTranscription.formattedString
+            let isFinal = result?.isFinal ?? false
+            let failed = error != nil
+            Task { @MainActor in
+                self?.handle(gen: gen, text: text, isFinal: isFinal, failed: failed)
+            }
+        }
+    }
+
+    private func handle(gen: Int, text: String?, isFinal: Bool, failed: Bool) {
+        guard gen == generation, isListening else { return }
+        if let text, text != partialText {
+            partialText = text
+            if !text.isEmpty { schedulePause() }
+        }
+        if isFinal || failed {
+            if partialText.trimmingCharacters(in: .whitespaces).isEmpty {
+                // Konuşma yokken tanıma kapandı (ör. süre doldu) → kısa bekleyip yeniden başla
+                let g = generation
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: 400_000_000)
+                    guard let self, self.isListening, self.generation == g else { return }
+                    self.startRecognition()
+                }
+            } else {
+                emitSegment()
+            }
+        }
+    }
+
+    private func schedulePause() {
+        pauseTimer?.invalidate()
+        pauseTimer = Timer.scheduledTimer(withTimeInterval: pauseInterval, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.emitSegment() }
+        }
+    }
+
+    private func emitSegment() {
+        pauseTimer?.invalidate(); pauseTimer = nil
+        let text = partialText.trimmingCharacters(in: .whitespacesAndNewlines)
+        startRecognition()   // yeni cümle için temiz sayfa
+        if !text.isEmpty { onSegment?(text) }
+    }
+
+    nonisolated static func rms(_ buffer: AVAudioPCMBuffer) -> Float {
         guard let data = buffer.floatChannelData?[0] else { return 0 }
         let n = Int(buffer.frameLength)
         guard n > 0 else { return 0 }
@@ -145,7 +183,8 @@ final class SpeechService: NSObject, ObservableObject {
     // MARK: Konuşma
 
     func speak(_ text: String, completion: (() -> Void)? = nil) {
-        stopSpeaking()
+        speakDone = nil          // önceki konuşmanın devamı tetiklenmesin
+        if synth.isSpeaking { synth.stopSpeaking(at: .immediate) }
         guard !text.isEmpty else { completion?(); return }
         do {
             let session = AVAudioSession.sharedInstance()
@@ -161,9 +200,14 @@ final class SpeechService: NSObject, ObservableObject {
         synth.speak(utt)
     }
 
+    /// Konuşmayı keser. Bekleyen tamamlama yine çağrılır (akış devam etsin diye).
     func stopSpeaking() {
-        if synth.isSpeaking { synth.stopSpeaking(at: .immediate) }
+        guard synth.isSpeaking || isSpeaking else { return }
+        synth.stopSpeaking(at: .immediate)
         isSpeaking = false
+        let cb = speakDone
+        speakDone = nil
+        cb?()
     }
 
     private static func bestTurkishVoice() -> AVSpeechSynthesisVoice? {
@@ -178,7 +222,6 @@ extension SpeechService: AVSpeechSynthesizerDelegate {
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
         Task { @MainActor in
             self.isSpeaking = false
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
             let cb = self.speakDone
             self.speakDone = nil
             cb?()
