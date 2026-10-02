@@ -81,6 +81,7 @@ struct SettingsView: View {
                     TextField("Adın", text: $settings.userName)
                     TextField("Asistanın adı", text: $settings.assistantName)
                     Toggle("Cevapları sesli oku", isOn: $settings.speakReplies)
+                    Toggle("Açılınca hemen dinlemeye başla", isOn: $settings.autoListen)
                 }
 
                 Section {

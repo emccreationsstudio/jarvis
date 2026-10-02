@@ -6,6 +6,16 @@ struct RootView: View {
     @State private var tab = 0
     @AppStorage("didOnboard") private var didOnboard = false
 
+    /// Her açılışta: ekranı temizle ve (ayar açıksa) dinlemeye başla
+    private func activate() {
+        tab = 0
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard UIApplication.shared.applicationState == .active else { return }
+            assistant.appBecameActive()
+        }
+    }
+
     private func consumeListenRequest() {
         guard assistant.listenRequested else { return }
         tab = 0
@@ -34,9 +44,15 @@ struct RootView: View {
                 .tag(3)
         }
         // "Hey Siri, Jarvis": istek uygulama tamamen açılmadan gelebilir → her fırsatta kontrol et
-        .onAppear { consumeListenRequest() }
+        .onAppear { activate() }
         .onChange(of: assistant.listenRequested) { _, _ in consumeListenRequest() }
-        .onChange(of: scenePhase) { _, p in if p == .active { consumeListenRequest() } }
+        .onChange(of: scenePhase) { _, p in
+            switch p {
+            case .active: activate()
+            case .background: assistant.appWentBackground()
+            default: break
+            }
+        }
         .sheet(isPresented: Binding(get: { !didOnboard }, set: { if !$0 { didOnboard = true } })) {
             OnboardingView { didOnboard = true }
         }
@@ -50,12 +66,17 @@ struct TalkView: View {
     @State private var input = ""
     @FocusState private var typing: Bool
 
+    /// Bu açılışta konuşulanlar (eski sohbet ekranda görünmez ama Jarvis hatırlar)
+    private var visibleMessages: [ChatMessage] {
+        Array(store.messages.filter { $0.date >= assistant.sessionStart }.suffix(60))
+    }
+
     // Arka plan görselindeki ölçüler (piksel, 853×1844 üzerinden)
     private let imgSize = CGSize(width: 853, height: 1844)
-    private let reactorCenter = CGPoint(x: 426, y: 312)
-    private let reactorRing: CGFloat = 290      // mavi halka çapı
-    private let panelTop: CGFloat = 548          // ortadaki panelin üstü
-    private let panelSide: CGFloat = 132         // panelin yan kenarları
+    private let reactorCenter = CGPoint(x: 426, y: 278)
+    private let reactorRing: CGFloat = 215       // içteki mavi halka çapı
+    private let contentTop: CGFloat = 486        // reaktörün hemen altı
+    private let sideFrame: CGFloat = 92          // yan metal çerçevelerin iç kenarı
 
     var body: some View {
         ZStack {
@@ -76,8 +97,8 @@ struct TalkView: View {
                 let y0 = (H - imgSize.height * k) / 2
                 let center = CGPoint(x: x0 + reactorCenter.x * k - ins.leading,
                                      y: y0 + reactorCenter.y * k - ins.top)
-                let top = max(0, y0 + panelTop * k - ins.top)
-                let side = max(14, x0 + panelSide * k - ins.leading)
+                let top = max(0, y0 + contentTop * k - ins.top)
+                let side = max(12, x0 + sideFrame * k - ins.leading)
 
                 ZStack(alignment: .top) {
                     ReactorButton(diameter: reactorRing * k)
@@ -118,18 +139,18 @@ struct TalkView: View {
         Group {
             if !store.messages.isEmpty {
                 Menu {
-                    Button("Sohbeti temizle", role: .destructive) { store.messages.removeAll() }
+                    Button("Tüm geçmişi sil", role: .destructive) { store.messages.removeAll() }
                 } label: {
                     Image(systemName: "ellipsis.circle").font(.title3)
                         .foregroundStyle(Theme.glow.opacity(0.8))
-                        .padding(12)
+                        .padding(14)
                 }
             }
         }
     }
 
     private var statusLine: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: 3) {
             HStack(spacing: 6) {
                 Circle().fill(statusColor).frame(width: 6, height: 6)
                     .shadow(color: statusColor, radius: 4)
@@ -144,21 +165,49 @@ struct TalkView: View {
                 .foregroundStyle(.white.opacity(0.45))
                 .multilineTextAlignment(.center)
         }
-        .padding(.top, 6)
         .padding(.bottom, 4)
         .animation(.easeInOut, value: assistant.phase)
     }
 
     private var hint: String {
-        if !assistant.conversing && assistant.phase == .idle {
-            return "REAKTÖRE DOKUN · YA DA “HEY SİRİ, JARVIS”"
-        }
+        if !assistant.conversing && assistant.phase == .idle { return "REAKTÖRE DOKUN VE KONUŞ" }
         switch assistant.phase {
-        case .listening: return "“BİTTİ” → İŞLE   ·   “JARVIS KAPAN” → ÇIK"
-        case .thinking: return "İŞLENİYOR…"
+        case .listening: return "“BİTTİ” → YAP   ·   “JARVIS KAPAN” → KAPAT"
+        case .thinking: return "İŞLENİYOR"
         case .speaking: return "SUSTURMAK İÇİN DOKUN"
         case .idle: return ""
         }
+    }
+
+    private var header: some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(settings.assistantName.uppercased(with: Locale(identifier: "tr_TR")))
+                    .font(.system(size: 22, weight: .light, design: .monospaced))
+                    .tracking(8)
+                    .foregroundStyle(Theme.glow)
+                    .shadow(color: Theme.glow.opacity(0.6), radius: 8)
+                HStack(spacing: 6) {
+                    Circle().fill(statusColor).frame(width: 6, height: 6)
+                        .shadow(color: statusColor, radius: 4)
+                    Text(statusText.uppercased(with: Locale(identifier: "tr_TR")))
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .tracking(2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            if !store.messages.isEmpty {
+                Menu {
+                    Button("Tüm geçmişi sil", role: .destructive) { store.messages.removeAll() }
+                } label: {
+                    Image(systemName: "ellipsis.circle").font(.title3)
+                        .foregroundStyle(Theme.glow.opacity(0.8))
+                }
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 8)
     }
 
     private var statusColor: Color {
@@ -183,10 +232,10 @@ struct TalkView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 10) {
-                    if store.messages.isEmpty {
+                    if visibleMessages.isEmpty && assistant.pendingNotes.isEmpty && assistant.speech.partialText.isEmpty {
                         EmptyHint()
                     }
-                    ForEach(store.messages.suffix(60)) { m in
+                    ForEach(visibleMessages) { m in
                         Bubble(message: m).id(m.id)
                     }
                     ForEach(Array(assistant.pendingNotes.enumerated()), id: \.offset) { _, note in
@@ -198,7 +247,7 @@ struct TalkView: View {
                             .id("partial")
                     }
                 }
-                .padding(.vertical, 10)
+                .padding(.vertical, 8)
             }
             .scrollIndicators(.hidden)
             .scrollDismissesKeyboard(.interactively)
@@ -245,7 +294,7 @@ struct TalkView: View {
 private struct EmptyHint: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Reaktöre dokun ya da “Hey Siri, Jarvis” de. İstediğin kadar konuş; “bitti” deyince yaparım, soru sorarsan hemen cevaplarım. “Jarvis kapan” ile kapanırım.")
+            Text("Jarvis açılınca seni dinler (ya da reaktöre dokun). İstediğin kadar konuş; “bitti” deyince yaparım, soru sorarsan hemen cevaplarım. “Jarvis kapan” ile kapanırım.")
                 .font(.footnote).foregroundStyle(.white.opacity(0.8))
             Text("Örnekler").font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.top, 4)
             ForEach([
@@ -308,7 +357,7 @@ private struct PendingBubble: View {
     }
 }
 
-/// Arka plandaki reaktörün üzerine oturan konuşma düğmesi.
+/// Arka plandaki reaktörün üzerine oturan konuşma düğmesi: dokun → konuş / bitir / sustur
 struct ReactorButton: View {
     @EnvironmentObject var assistant: Assistant
     let diameter: CGFloat
@@ -320,23 +369,26 @@ struct ReactorButton: View {
                 // Çekirdek ışığı
                 Circle()
                     .fill(RadialGradient(colors: [.white.opacity(0.9), Theme.glow, Theme.glow.opacity(0)],
-                                         center: .center, startRadius: 0, endRadius: diameter * 0.32))
-                    .frame(width: diameter * 0.62, height: diameter * 0.62)
+                                         center: .center, startRadius: 0, endRadius: diameter * 0.36))
+                    .frame(width: diameter * 0.72, height: diameter * 0.72)
                     .opacity(coreOpacity)
                     .scaleEffect(coreScale)
                     .blendMode(.screen)
-                // Dönen halkalar (dinlerken / düşünürken / konuşurken)
+                // Dönen halkalar (sohbet açıkken)
                 ReactorRings(phase: assistant.phase, level: assistant.speech.level)
-                    .scaleEffect(diameter / 200)
-                    .opacity(assistant.conversing || assistant.phase != .idle ? 1 : 0.0)
-                // Dış parıltı
+                    .scaleEffect(diameter / 190)
+                    .opacity(assistant.conversing || assistant.phase != .idle ? 0.9 : 0)
+                // Dinlerken dış parıltı
                 Circle()
-                    .stroke(Theme.glow.opacity(assistant.phase == .listening ? 0.7 : 0.0), lineWidth: 3)
+                    .stroke(Theme.glow.opacity(assistant.phase == .listening ? 0.7 : 0), lineWidth: 3)
                     .frame(width: diameter, height: diameter)
                     .blur(radius: 4)
                     .scaleEffect(breathe ? 1.04 : 0.98)
+                if assistant.phase == .thinking {
+                    ProgressView().controlSize(.regular).tint(.white)
+                }
             }
-            .frame(width: diameter * 1.25, height: diameter * 1.25)
+            .frame(width: diameter * 1.4, height: diameter * 1.4)
             .contentShape(Circle())
             .animation(.easeInOut(duration: 0.4), value: assistant.phase)
             .animation(.easeOut(duration: 0.12), value: assistant.speech.level)
@@ -350,14 +402,87 @@ struct ReactorButton: View {
 
     private var coreOpacity: Double {
         switch assistant.phase {
-        case .idle: return breathe ? 0.25 : 0.12
+        case .idle: return breathe ? 0.22 : 0.08
         case .listening: return 0.55 + Double(assistant.speech.level) * 0.45
         case .thinking: return breathe ? 0.7 : 0.4
-        case .speaking: return breathe ? 0.8 : 0.5
+        case .speaking: return breathe ? 0.85 : 0.5
         }
     }
 
     private var coreScale: CGFloat {
         assistant.phase == .listening ? 0.9 + CGFloat(assistant.speech.level) * 0.35 : (breathe ? 1.0 : 0.92)
+    }
+}
+
+/// Altta dönen halkalı logo: dokun → konuş / bitir / sustur
+struct OrbButton: View {
+    @EnvironmentObject var assistant: Assistant
+    @State private var breathe = false
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Button(action: assistant.toggleListening) {
+                ZStack {
+                    Circle()
+                        .fill(Theme.glow.opacity(glowOpacity))
+                        .frame(width: 140, height: 140)
+                        .blur(radius: 34)
+                        .scaleEffect(breathe ? 1.08 : 0.94)
+                    ReactorRings(phase: assistant.phase, level: assistant.speech.level)
+                        .scaleEffect(0.82)
+                    Image("Orb")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 112, height: 112)
+                        .clipShape(Circle())
+                        .overlay(Circle().stroke(Theme.glow.opacity(0.6), lineWidth: 1.5))
+                        .shadow(color: Theme.glow.opacity(0.7), radius: 12)
+                        .scaleEffect(orbScale)
+                        .animation(.easeOut(duration: 0.12), value: assistant.speech.level)
+                    if assistant.phase == .thinking {
+                        ProgressView().controlSize(.large).tint(.white)
+                    }
+                }
+                .frame(width: 200, height: 200)
+                .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(assistant.conversing ? "Sohbeti bitir" : "Jarvis'le konuş")
+
+            Text(hint)
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .tracking(1.2)
+                .foregroundStyle(Theme.glow.opacity(0.65))
+                .multilineTextAlignment(.center)
+                .frame(minHeight: 12)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 6)
+        }
+        .onAppear {
+            withAnimation(.easeInOut(duration: 2.2).repeatForever(autoreverses: true)) { breathe = true }
+        }
+    }
+
+    private var hint: String {
+        if !assistant.conversing && assistant.phase == .idle { return "DOKUN VE KONUŞ" }
+        switch assistant.phase {
+        case .listening: return "“BİTTİ” → YAP   ·   “JARVIS KAPAN” → KAPAT"
+        case .thinking: return "İŞLENİYOR"
+        case .speaking: return "SUSTURMAK İÇİN DOKUN"
+        case .idle: return ""
+        }
+    }
+
+    private var orbScale: CGFloat {
+        assistant.phase == .listening ? 1.0 + CGFloat(assistant.speech.level) * 0.12 : 1.0
+    }
+
+    private var glowOpacity: Double {
+        switch assistant.phase {
+        case .listening: return 0.85
+        case .speaking: return 0.6
+        case .thinking: return 0.5
+        case .idle: return 0.3
+        }
     }
 }

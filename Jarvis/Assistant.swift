@@ -64,11 +64,41 @@ final class Assistant: ObservableObject {
     }
 
     /// Siri / Kısayol / ekrandan
-    func startListening() { if !conversing { startConversation() } }
+    func startListening() { if !conversing { startConversation(greet: true) } }
 
-    func startConversation() {
+    /// Ekranda gösterilen sohbetin başlangıcı — her açılışta ekran temiz başlar (geçmiş saklanır)
+    @Published private(set) var sessionStart = Date()
+
+    /// Uygulama ön plana geldi (Siri, ikon, Arkaya Dokunma…)
+    func appBecameActive() {
+        sessionStart = Date()
+        lastRoute = nil
+        errorText = nil
+        let wanted = listenRequested || settings.autoListen
+        listenRequested = false
+        guard wanted, UserDefaults.standard.bool(forKey: "didOnboard"), !conversing, phase == .idle else { return }
+        startConversation(greet: true)
+    }
+
+    /// Uygulama arka plana gitti → mikrofonu bırak
+    func appWentBackground() {
+        guard conversing else { return }
+        if pendingNotes.isEmpty {
+            speech.stopSpeaking()
+            endConversation()
+        } else {
+            finish(close: true)            // söylenenler kaybolmasın
+        }
+    }
+
+    private var starting = false
+
+    func startConversation(greet: Bool = false) {
+        guard !conversing, !starting else { return }
+        starting = true
         errorText = nil
         Task {
+            defer { starting = false }
             guard await speech.requestPermissions() else {
                 errorText = "Mikrofon ve konuşma tanıma izni gerekiyor. Ayarlar → Jarvis'ten açabilirsiniz."
                 return
@@ -78,7 +108,19 @@ final class Assistant: ObservableObject {
             closeAfterReply = false
             pendingNotes = []
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-            openMic()
+            if greet {
+                phase = .speaking
+                speech.speak("Efendim?") { [weak self] in self?.openMic() }
+                // Ses çıkmazsa (ör. Siri sesi hâlâ tutuyorsa) yine de dinlemeye geç
+                Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: 2_500_000_000)
+                    guard let self, self.conversing, !self.speech.isListening, self.phase == .speaking else { return }
+                    self.speech.stopSpeaking()
+                    self.openMic()
+                }
+            } else {
+                openMic()
+            }
         }
     }
 
@@ -91,17 +133,27 @@ final class Assistant: ObservableObject {
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 
-    private func openMic() {
+    private func openMic(attempt: Int = 0) {
         guard conversing else { return }
+        if speech.isListening { phase = .listening; return }
         phase = .listening
         let ok = speech.startMic { [weak self] segment in
             self?.handleSegment(segment)
         }
         if !ok {
-            errorText = "Mikrofon başlatılamadı. Lütfen tekrar deneyin."
-            endConversation()
+            // Uygulama yeni açıldıysa ses sistemi (Siri) birkaç an meşgul olabilir → tekrar dene
+            if attempt < 5 {
+                Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: 600_000_000)
+                    self?.openMic(attempt: attempt + 1)
+                }
+            } else {
+                errorText = "Mikrofon başlatılamadı. Reaktöre dokunup tekrar deneyin."
+                endConversation()
+            }
             return
         }
+        errorText = nil
         armIdleTimer()
     }
 
