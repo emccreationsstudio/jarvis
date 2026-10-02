@@ -1,0 +1,51 @@
+# XcodeGen proje tanımı — Codemagic derlemede Jarvis.xcodeproj'u bundan üretir.
+name: Jarvis
+options:
+  bundleIdPrefix: com.emccreationsstudio
+  deploymentTarget:
+    iOS: "17.0"
+  developmentLanguage: tr
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    VERSIONING_SYSTEM: apple-generic
+targets:
+  Jarvis:
+    type: application
+    platform: iOS
+    sources:
+      - path: Jarvis
+    scheme: {}
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.emccreationsstudio.JARVISMobile
+        PRODUCT_NAME: Jarvis
+        TARGETED_DEVICE_FAMILY: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        GENERATE_INFOPLIST_FILE: NO
+        ENABLE_PREVIEWS: YES
+    info:
+      path: Jarvis/Info.plist
+      properties:
+        CFBundleDisplayName: Jarvis
+        CFBundleDevelopmentRegion: tr
+        CFBundleLocalizations: [tr, en]
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        ITSAppUsesNonExemptEncryption: false
+        LSApplicationQueriesSchemes: [tel]
+        UILaunchScreen:
+          UIColorName: ""
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        UIUserInterfaceStyle: Dark
+        NSMicrophoneUsageDescription: Jarvis'e sesli komut verebilmeniz için mikrofon kullanılır.
+        NSSpeechRecognitionUsageDescription: Söylediklerinizi yazıya çevirmek için konuşma tanıma kullanılır.
+        NSCalendarsFullAccessUsageDescription: Jarvis gününüzü planlarken takviminizi okur ve istediğinizde etkinlik ekler.
+        NSCalendarsUsageDescription: Jarvis gününüzü planlarken takviminizi okur ve istediğinizde etkinlik ekler.
+        NSLocationWhenInUseUsageDescription: Rota ve trafik süresini bulunduğunuz yerden hesaplamak için konum kullanılır.
+        NSContactsUsageDescription: Aranacaklar listesindeki kişiyi rehberinizde bulup tek dokunuşla aramak için kullanılır.
+        NSAlarmKitUsageDescription: Kritik hatırlatmalarda telefonunuz alarm gibi çalar.

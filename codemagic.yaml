@@ -1,0 +1,38 @@
+# Codemagic: Jarvis'i derler, imzalar ve TestFlight'a yükler.
+workflows:
+  ios-testflight:
+    name: Jarvis — TestFlight
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    integrations:
+      app_store_connect: SesAcma
+    environment:
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.emccreationsstudio.JARVISMobile
+      xcode: latest
+      node: latest
+    triggering:
+      events: []
+    scripts:
+      - name: Sunucu testleri
+        script: node server/test.mjs
+      - name: XcodeGen kur
+        script: which xcodegen || brew install xcodegen
+      - name: Derleme numarası
+        script: |
+          sed -i '' "s/CURRENT_PROJECT_VERSION: \"1\"/CURRENT_PROJECT_VERSION: \"$BUILD_NUMBER\"/" project.yml
+          grep CURRENT_PROJECT_VERSION project.yml
+      - name: Xcode projesini üret
+        script: xcodegen generate
+      - name: İmzalama profillerini uygula
+        script: xcode-project use-profiles
+      - name: Uygulamayı paketle (.ipa)
+        script: xcode-project build-ipa --project Jarvis.xcodeproj --scheme Jarvis
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
