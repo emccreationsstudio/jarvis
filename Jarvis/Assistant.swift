@@ -80,6 +80,17 @@ final class Assistant: ObservableObject {
         startConversation(greet: true)
     }
 
+    /// Yazı alanına dokunuldu → dinlemeyi durdur (söylenmiş notlar kaybolmasın)
+    func pauseForTyping() {
+        guard conversing else { return }
+        if phase == .speaking { speech.stopSpeaking() }
+        if pendingNotes.isEmpty {
+            endConversation()
+        } else {
+            finish(close: true)
+        }
+    }
+
     /// Uygulama arka plana gitti → mikrofonu bırak
     func appWentBackground() {
         guard conversing else { return }
@@ -113,8 +124,9 @@ final class Assistant: ObservableObject {
                 speech.speak("Efendim?") { [weak self] in self?.openMic() }
                 // Ses çıkmazsa (ör. Siri sesi hâlâ tutuyorsa) yine de dinlemeye geç
                 Task { [weak self] in
-                    try? await Task.sleep(nanoseconds: 2_500_000_000)
-                    guard let self, self.conversing, !self.speech.isListening, self.phase == .speaking else { return }
+                    try? await Task.sleep(nanoseconds: 6_000_000_000)
+                    guard let self, self.conversing, !self.speech.isListening,
+                          self.phase == .speaking, !self.speech.isSpeaking else { return }
                     self.speech.stopSpeaking()
                     self.openMic()
                 }

@@ -6,42 +6,70 @@ struct ListsView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                Picker("Liste", selection: $section) {
-                    Text("Görevler (\(store.openTasks.count))").tag(0)
-                    Text("Alışveriş (\(store.shopping.count))").tag(1)
-                    Text("Aranacak (\(store.calls.count))").tag(2)
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal)
-                .padding(.vertical, 8)
+            VStack(spacing: 12) {
+                HUDTitle(text: "Listeler", subtitle: subtitle)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 8)
 
-                switch section {
-                case 0: TasksList()
-                case 1: ShoppingList()
-                default: CallsList()
+                HUDSegmented(items: [
+                    ("Görevler", "checklist", store.openTasks.count),
+                    ("Alışveriş", "cart.fill", store.shopping.count),
+                    ("Aranacak", "phone.fill", store.calls.count)
+                ], selection: $section)
+                .padding(.horizontal, 16)
+
+                Group {
+                    switch section {
+                    case 0: TasksList()
+                    case 1: ShoppingList()
+                    default: CallsList()
+                    }
                 }
+                .transition(.opacity)
             }
-            .background(Theme.background.ignoresSafeArea())
-            .navigationTitle("Listeler")
+            .background(Theme.background)
+            .toolbar(.hidden, for: .navigationBar)
         }
+    }
+
+    private var subtitle: String {
+        let critical = store.openTasks.filter { $0.priority == .critical }.count
+        if critical > 0 { return "\(critical) kritik görev var" }
+        if store.openTasks.isEmpty && store.shopping.isEmpty && store.calls.isEmpty { return "Her şey yolunda" }
+        return "\(store.openTasks.count) görev · \(store.shopping.count) ürün · \(store.calls.count) arama"
     }
 }
 
+/// Listelerin üstündeki ekleme satırı
 private struct AddRow: View {
     let placeholder: String
+    let icon: String
     let onAdd: (String) -> Void
     @State private var text = ""
+    @FocusState private var focused: Bool
 
     var body: some View {
-        HStack {
-            TextField(placeholder, text: $text)
+        HStack(spacing: 10) {
+            Image(systemName: icon).foregroundStyle(Theme.glow.opacity(0.8))
+            TextField("", text: $text, prompt: Text(placeholder).foregroundColor(.white.opacity(0.4)))
+                .focused($focused)
                 .submitLabel(.done)
                 .onSubmit(add)
-            Button(action: add) { Image(systemName: "plus.circle.fill").font(.title2) }
-                .disabled(text.trimmingCharacters(in: .whitespaces).isEmpty)
+            Button(action: add) {
+                Image(systemName: "plus")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 30, height: 30)
+                    .background(Circle().fill(canAdd ? Theme.accent : Color.white.opacity(0.1)))
+                    .shadow(color: canAdd ? Theme.glow.opacity(0.6) : .clear, radius: 6)
+            }
+            .buttonStyle(.plain)
+            .disabled(!canAdd)
         }
+        .padding(.vertical, 2)
     }
+
+    private var canAdd: Bool { !text.trimmingCharacters(in: .whitespaces).isEmpty }
 
     private func add() {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -51,19 +79,45 @@ private struct AddRow: View {
     }
 }
 
+/// Boş liste mesajı
+private struct EmptyRow: View {
+    let icon: String
+    let text: String
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon).font(.title3).foregroundStyle(Theme.glow.opacity(0.5))
+            Text(text).font(.subheadline).foregroundStyle(.white.opacity(0.55))
+        }
+        .padding(.vertical, 8)
+    }
+}
+
+/// Tüm listelerde ortak görünüm
+private struct HUDList<Content: View>: View {
+    @ViewBuilder var content: Content
+    var body: some View {
+        List { content }
+            .listStyle(.insetGrouped)
+            .scrollContentBackground(.hidden)
+            .listRowSpacing(6)
+            .contentMargins(.top, 4, for: .scrollContent)
+    }
+}
+
 private struct TasksList: View {
     @EnvironmentObject var store: Store
     @State private var editing: TaskItem?
 
     var body: some View {
-        List {
+        HUDList {
             Section {
-                AddRow(placeholder: "Yeni görev") { store.upsert(TaskItem(title: $0)) }
+                AddRow(placeholder: "Yeni görev", icon: "plus.circle") { store.upsert(TaskItem(title: $0)) }
+                    .glassRow()
             }
             Section {
                 if store.openTasks.isEmpty {
-                    Text("Açık görev yok. Jarvis'e söyleyebilir ya da yukarıdan ekleyebilirsin.")
-                        .foregroundStyle(.secondary).font(.subheadline)
+                    EmptyRow(icon: "checkmark.seal", text: "Açık görev yok. Jarvis'e söyleyebilir ya da yukarıdan ekleyebilirsin.")
+                        .glassRow()
                 }
                 ForEach(store.openTasks) { task in
                     TaskRow(task: task)
@@ -75,10 +129,17 @@ private struct TasksList: View {
                         .swipeActions(edge: .leading) {
                             Button { store.complete(taskID: task.id) } label: { Label("Bitti", systemImage: "checkmark") }.tint(.green)
                         }
+                        .glassRow()
+                }
+            } header: {
+                if !store.openTasks.isEmpty { HUDHeader(text: "Açık görevler") }
+            } footer: {
+                if !store.openTasks.isEmpty {
+                    Text("Sağa kaydır: bitti · Sola kaydır: sil · Dokun: düzenle")
+                        .font(.caption2).foregroundStyle(.white.opacity(0.4))
                 }
             }
         }
-        .scrollContentBackground(.hidden)
         .sheet(item: $editing) { task in
             TaskEditor(task: task)
         }
@@ -90,29 +151,39 @@ private struct TaskRow: View {
     let task: TaskItem
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .center, spacing: 12) {
+            // Önem rengi: ışıklı şerit
+            Capsule()
+                .fill(Theme.color(for: task.priority))
+                .frame(width: 3)
+                .shadow(color: Theme.color(for: task.priority).opacity(0.8), radius: 4)
+                .padding(.vertical, 2)
             Button { store.complete(taskID: task.id) } label: {
-                Image(systemName: "circle").font(.title3).foregroundStyle(Theme.color(for: task.priority))
+                Image(systemName: "circle")
+                    .font(.title3)
+                    .foregroundStyle(Theme.color(for: task.priority))
             }
             .buttonStyle(.plain)
             VStack(alignment: .leading, spacing: 4) {
-                Text(task.title)
+                Text(task.title).foregroundStyle(.white)
                 HStack(spacing: 8) {
                     if let due = task.due {
                         Label(DateText.friendly(due), systemImage: task.priority == .critical ? "alarm.fill" : "bell")
-                            .foregroundStyle(due < Date() ? .red : .secondary)
+                            .foregroundStyle(due < Date() ? .red : .white.opacity(0.55))
                     }
                     if task.priority != .normal {
                         Text(task.priority.label)
-                            .padding(.horizontal, 6).padding(.vertical, 1)
+                            .padding(.horizontal, 7).padding(.vertical, 1)
                             .background(Theme.color(for: task.priority).opacity(0.2), in: Capsule())
+                            .overlay(Capsule().stroke(Theme.color(for: task.priority).opacity(0.5), lineWidth: 0.5))
                             .foregroundStyle(Theme.color(for: task.priority))
                     }
                 }
                 .font(.caption)
             }
+            Spacer(minLength: 0)
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 4)
     }
 }
 
@@ -130,20 +201,30 @@ private struct TaskEditor: View {
     var body: some View {
         NavigationStack {
             Form {
-                TextField("Başlık", text: $task.title)
-                Toggle("Hatırlat", isOn: $hasDue)
-                if hasDue {
-                    DatePicker("Zaman", selection: Binding(get: { task.due ?? Date().addingTimeInterval(3600) }, set: { task.due = $0 }))
-                        .environment(\.locale, Locale(identifier: "tr_TR"))
-                }
-                Picker("Önem", selection: $task.priority) {
-                    ForEach(Priority.allCases) { Text($0.label).tag($0) }
-                }
                 Section {
-                    Text("Kritik: alarm gibi çalar. Yüksek: 5 ve 10 dakika sonra tekrar hatırlatır. Düşük: sessiz bildirim.")
-                        .font(.footnote).foregroundStyle(.secondary)
+                    TextField("Başlık", text: $task.title)
+                    Toggle("Hatırlat", isOn: $hasDue)
+                    if hasDue {
+                        DatePicker("Zaman", selection: Binding(get: { task.due ?? Date().addingTimeInterval(3600) }, set: { task.due = $0 }))
+                            .environment(\.locale, Locale(identifier: "tr_TR"))
+                    }
                 }
+                .glassRow()
+                Section {
+                    Picker("Önem", selection: $task.priority) {
+                        ForEach(Priority.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                } header: {
+                    HUDHeader(text: "Önem")
+                } footer: {
+                    Text("Kritik: alarm gibi çalar. Yüksek: 5 ve 10 dakika sonra tekrar hatırlatır. Düşük: sessiz bildirim.")
+                        .font(.footnote).foregroundStyle(.white.opacity(0.45))
+                }
+                .glassRow()
             }
+            .scrollContentBackground(.hidden)
+            .background(Theme.background)
             .navigationTitle("Görev")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -155,10 +236,12 @@ private struct TaskEditor: View {
                         Task { await Reminders.shared.requestPermission() }
                         dismiss()
                     }
+                    .bold()
                     .disabled(task.title.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
         }
+        .presentationBackground(.clear)
     }
 }
 
@@ -166,36 +249,50 @@ private struct ShoppingList: View {
     @EnvironmentObject var store: Store
 
     var body: some View {
-        List {
+        HUDList {
             Section {
-                AddRow(placeholder: "Ürün ekle") { _ = store.addShopping([$0]) }
+                AddRow(placeholder: "Ürün ekle", icon: "cart.badge.plus") { _ = store.addShopping([$0]) }
+                    .glassRow()
             }
             Section {
                 if store.shopping.isEmpty {
-                    Text("Liste boş. \"Alınacaklara süt ekle\" diyebilirsin.").foregroundStyle(.secondary).font(.subheadline)
+                    EmptyRow(icon: "cart", text: "Liste boş. \"Alınacaklara süt ekle\" diyebilirsin.")
+                        .glassRow()
                 }
                 ForEach(store.shopping) { item in
-                    HStack {
-                        Button { store.shopping.removeAll { $0.id == item.id } } label: {
-                            Image(systemName: "circle").font(.title3)
+                    HStack(spacing: 12) {
+                        Button {
+                            withAnimation { store.shopping.removeAll { $0.id == item.id } }
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        } label: {
+                            Image(systemName: "circle").font(.title3).foregroundStyle(Theme.glow)
                         }
                         .buttonStyle(.plain)
-                        Text(item.name)
+                        Text(item.name).foregroundStyle(.white)
+                        Spacer(minLength: 0)
                     }
+                    .padding(.vertical, 4)
+                    .glassRow()
                 }
                 .onDelete { store.shopping.remove(atOffsets: $0) }
+            } header: {
+                if !store.shopping.isEmpty { HUDHeader(text: "Alınacaklar") }
             } footer: {
                 if !store.shopping.isEmpty {
                     Text("Aldığın ürüne dokun, listeden çıksın.")
+                        .font(.caption2).foregroundStyle(.white.opacity(0.4))
                 }
             }
             if !store.shopping.isEmpty {
                 Section {
-                    Button("Listeyi temizle", role: .destructive) { store.shopping.removeAll() }
+                    Button("Listeyi temizle", role: .destructive) { withAnimation { store.shopping.removeAll() } }
+                        .buttonStyle(HUDButtonStyle(prominent: false, tint: .red))
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
                 }
             }
         }
-        .scrollContentBackground(.hidden)
     }
 }
 
@@ -204,20 +301,28 @@ private struct CallsList: View {
     @State private var notFound: String?
 
     var body: some View {
-        List {
+        HUDList {
             Section {
-                AddRow(placeholder: "Kimi arayacaksın?") { store.calls.append(CallItem(person: $0)) }
+                AddRow(placeholder: "Kimi arayacaksın?", icon: "person.badge.plus") { store.calls.append(CallItem(person: $0)) }
+                    .glassRow()
             }
             Section {
                 if store.calls.isEmpty {
-                    Text("Aranacak kimse yok.").foregroundStyle(.secondary).font(.subheadline)
+                    EmptyRow(icon: "phone", text: "Aranacak kimse yok.")
+                        .glassRow()
                 }
                 ForEach(store.calls) { call in
-                    HStack {
+                    HStack(spacing: 12) {
+                        Text(String(call.person.prefix(1)).uppercased(with: Locale(identifier: "tr_TR")))
+                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+                            .frame(width: 36, height: 36)
+                            .background(Circle().fill(Theme.accent.opacity(0.25)))
+                            .overlay(Circle().stroke(Theme.glow.opacity(0.5), lineWidth: 1))
+                            .foregroundStyle(Theme.glow)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(call.person)
+                            Text(call.person).foregroundStyle(.white)
                             if let r = call.reason, !r.isEmpty {
-                                Text(r).font(.caption).foregroundStyle(.secondary)
+                                Text(r).font(.caption).foregroundStyle(.white.opacity(0.55))
                             }
                         }
                         Spacer()
@@ -228,19 +333,25 @@ private struct CallsList: View {
                             }
                         } label: {
                             Image(systemName: "phone.fill")
-                                .padding(10)
-                                .background(Color.green.opacity(0.2), in: Circle())
+                                .font(.system(size: 15, weight: .semibold))
+                                .frame(width: 40, height: 40)
+                                .background(Circle().fill(Color.green.opacity(0.22)))
+                                .overlay(Circle().stroke(Color.green.opacity(0.6), lineWidth: 1))
+                                .shadow(color: .green.opacity(0.5), radius: 6)
                                 .foregroundStyle(.green)
                         }
                         .buttonStyle(.plain)
                     }
+                    .padding(.vertical, 4)
                     .swipeActions {
                         Button { store.calls.removeAll { $0.id == call.id } } label: { Label("Arandı", systemImage: "checkmark") }.tint(.green)
                     }
+                    .glassRow()
                 }
+            } header: {
+                if !store.calls.isEmpty { HUDHeader(text: "Aranacaklar") }
             }
         }
-        .scrollContentBackground(.hidden)
         .alert("Rehberde bulunamadı", isPresented: Binding(get: { notFound != nil }, set: { if !$0 { notFound = nil } })) {
             Button("Tamam", role: .cancel) {}
         } message: {

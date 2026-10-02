@@ -144,6 +144,10 @@ final class AppSettings: ObservableObject {
     @Published var token: String { didSet { Keychain.set(token, for: "appToken") } }
     /// Uygulama her açıldığında (Siri, ikon, Arkaya Dokunma) kendiliğinden dinlemeye başla
     @Published var autoListen: Bool { didSet { UserDefaults.standard.set(autoListen, forKey: "autoListen") } }
+    /// Doğal (yapay zekâ) ses; kapalıysa iPhone'un kendi sesi
+    @Published var naturalVoice: Bool { didSet { UserDefaults.standard.set(naturalVoice, forKey: "naturalVoice") } }
+    @Published var voiceName: String { didSet { UserDefaults.standard.set(voiceName, forKey: "voiceName") } }
+    @Published var voiceSpeed: Double { didSet { UserDefaults.standard.set(voiceSpeed, forKey: "voiceSpeed") } }
 
     private init() {
         let d = UserDefaults.standard
@@ -152,6 +156,9 @@ final class AppSettings: ObservableObject {
         assistantName = d.string(forKey: "assistantName") ?? "Jarvis"
         speakReplies = d.object(forKey: "speakReplies") as? Bool ?? true
         autoListen = d.object(forKey: "autoListen") as? Bool ?? true
+        naturalVoice = d.object(forKey: "naturalVoice") as? Bool ?? true
+        voiceName = d.string(forKey: "voiceName") ?? "onyx"
+        voiceSpeed = d.object(forKey: "voiceSpeed") as? Double ?? 1.05
         token = Keychain.get("appToken") ?? ""
     }
 

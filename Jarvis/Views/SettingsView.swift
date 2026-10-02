@@ -6,38 +6,74 @@ struct MemoryView: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                Section {
-                    HStack {
-                        TextField("Jarvis neyi hatırlasın?", text: $text, axis: .vertical)
-                        Button {
-                            let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                            guard !t.isEmpty else { return }
-                            store.memory.append(MemoryNote(text: t))
-                            text = ""
-                        } label: { Image(systemName: "plus.circle.fill").font(.title2) }
+            VStack(spacing: 8) {
+                HUDTitle(text: "Hafıza", subtitle: store.memory.isEmpty ? "Jarvis henüz bir şey ezberlemedi" : "\(store.memory.count) kayıt · her konuşmada dikkate alınır")
+                    .padding(.horizontal, 20)
+                    .padding(.top, 8)
+                List {
+                    Section {
+                        HStack(spacing: 10) {
+                            Image(systemName: "brain.head.profile").foregroundStyle(Theme.glow.opacity(0.8))
+                            TextField("", text: $text, prompt: Text("Jarvis neyi hatırlasın?").foregroundColor(.white.opacity(0.4)), axis: .vertical)
+                            Button(action: add) {
+                                Image(systemName: "plus")
+                                    .font(.system(size: 14, weight: .bold))
+                                    .foregroundStyle(.white)
+                                    .frame(width: 30, height: 30)
+                                    .background(Circle().fill(canAdd ? Theme.accent : Color.white.opacity(0.1)))
+                                    .shadow(color: canAdd ? Theme.glow.opacity(0.6) : .clear, radius: 6)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(!canAdd)
+                        }
+                        .padding(.vertical, 2)
+                        .glassRow()
+                    } footer: {
+                        Text("Konuşurken \"bunu hatırla\" demen de yeterli.")
+                            .font(.caption2).foregroundStyle(.white.opacity(0.4))
                     }
-                } footer: {
-                    Text("Jarvis buradaki bilgileri her konuşmada dikkate alır. Konuşurken \"bunu hatırla\" demen de yeterli.")
+                    Section {
+                        if store.memory.isEmpty {
+                            HStack(spacing: 12) {
+                                Image(systemName: "sparkles").foregroundStyle(Theme.glow.opacity(0.5))
+                                Text("Örnek: \"Pazartesi ve perşembe stüdyom var\", \"Bostancı'daki müşteri Ahmet Bey\"")
+                                    .font(.subheadline).foregroundStyle(.white.opacity(0.55))
+                            }
+                            .padding(.vertical, 6)
+                            .glassRow()
+                        }
+                        ForEach(store.memory.reversed()) { note in
+                            HStack(alignment: .top, spacing: 10) {
+                                Image(systemName: "bookmark.fill").font(.caption).foregroundStyle(Theme.glow).padding(.top, 3)
+                                Text(note.text).foregroundStyle(.white)
+                            }
+                            .padding(.vertical, 4)
+                            .glassRow()
+                        }
+                        .onDelete { offsets in
+                            let reversed = Array(store.memory.reversed())
+                            let ids = Set(offsets.map { reversed[$0].id })
+                            store.memory.removeAll { ids.contains($0.id) }
+                        }
+                    } header: {
+                        if !store.memory.isEmpty { HUDHeader(text: "Bildikleri") }
+                    }
                 }
-                Section {
-                    if store.memory.isEmpty {
-                        Text("Henüz kayıt yok.").foregroundStyle(.secondary)
-                    }
-                    ForEach(store.memory.reversed()) { note in
-                        Text(note.text)
-                    }
-                    .onDelete { offsets in
-                        let reversed = Array(store.memory.reversed())
-                        let ids = Set(offsets.map { reversed[$0].id })
-                        store.memory.removeAll { ids.contains($0.id) }
-                    }
-                }
+                .scrollContentBackground(.hidden)
+                .listRowSpacing(6)
             }
-            .scrollContentBackground(.hidden)
-            .background(Theme.background.ignoresSafeArea())
-            .navigationTitle("Hafıza")
+            .background(Theme.background)
+            .toolbar(.hidden, for: .navigationBar)
         }
+    }
+
+    private var canAdd: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+    private func add() {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        store.memory.append(MemoryNote(text: t))
+        text = ""
     }
 }
 
@@ -47,66 +83,132 @@ struct SettingsView: View {
     @State private var testResult: String?
     @State private var testing = false
 
+    private let voices: [(id: String, label: String)] = [
+        ("onyx", "Onyx · derin erkek"),
+        ("ash", "Ash · sıcak erkek"),
+        ("echo", "Echo · net erkek"),
+        ("ballad", "Ballad · yumuşak erkek"),
+        ("verse", "Verse · enerjik"),
+        ("alloy", "Alloy · nötr"),
+        ("sage", "Sage · sakin kadın"),
+        ("coral", "Coral · neşeli kadın"),
+        ("shimmer", "Shimmer · parlak kadın"),
+        ("nova", "Nova · genç kadın")
+    ]
+
     var body: some View {
         NavigationStack {
-            Form {
-                Section {
-                    TextField("https://jarvis.….workers.dev", text: $settings.serverURL)
-                        .keyboardType(.URL)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    SecureField("Uygulama şifresi", text: $settings.token)
-                    Button {
-                        testing = true
-                        Task {
-                            testResult = await assistant.testConnection()
-                            testing = false
+            VStack(spacing: 8) {
+                HUDTitle(text: "Ayarlar", subtitle: settings.isConfigured ? "Sunucu bağlı" : "Sunucu bağlı değil")
+                    .padding(.horizontal, 20)
+                    .padding(.top, 8)
+                Form {
+                    Section {
+                        TextField("https://jarvis.….workers.dev", text: $settings.serverURL)
+                            .keyboardType(.URL)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        SecureField("Uygulama şifresi", text: $settings.token)
+                        Button {
+                            testing = true
+                            Task {
+                                testResult = await assistant.testConnection()
+                                testing = false
+                            }
+                        } label: {
+                            HStack(spacing: 8) {
+                                if testing { ProgressView().tint(.white) } else { Image(systemName: "bolt.horizontal.circle") }
+                                Text("Bağlantıyı test et")
+                            }
                         }
-                    } label: {
-                        HStack {
-                            Text("Bağlantıyı test et")
-                            if testing { Spacer(); ProgressView() }
+                        .buttonStyle(HUDButtonStyle())
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
+                        if let testResult {
+                            Text(testResult).font(.footnote).foregroundStyle(.white.opacity(0.6))
                         }
+                    } header: {
+                        HUDHeader(text: "Sunucu")
+                    } footer: {
+                        Text("Cloudflare'deki Jarvis sunucusunun adresi ve APP_TOKEN şifresi.")
+                            .font(.caption2).foregroundStyle(.white.opacity(0.4))
                     }
-                    if let testResult {
-                        Text(testResult).font(.footnote).foregroundStyle(.secondary)
-                    }
-                } header: {
-                    Text("Sunucu")
-                } footer: {
-                    Text("Cloudflare'de kurduğunuz Jarvis sunucusunun adresi ve orada APP_TOKEN olarak girdiğiniz şifre.")
-                }
+                    .glassRow()
 
-                Section("Kişisel") {
-                    TextField("Adın", text: $settings.userName)
-                    TextField("Asistanın adı", text: $settings.assistantName)
-                    Toggle("Cevapları sesli oku", isOn: $settings.speakReplies)
-                    Toggle("Açılınca hemen dinlemeye başla", isOn: $settings.autoListen)
-                }
-
-                Section {
-                    Button("Tüm izinleri iste") {
-                        Task { await assistant.requestAllPermissions() }
+                    Section {
+                        Toggle("Doğal ses (yapay zekâ)", isOn: $settings.naturalVoice)
+                        if settings.naturalVoice {
+                            Picker("Ses", selection: $settings.voiceName) {
+                                ForEach(voices, id: \.id) { Text($0.label).tag($0.id) }
+                            }
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text("Konuşma hızı")
+                                    Spacer()
+                                    Text(String(format: "%.2fx", settings.voiceSpeed)).foregroundStyle(.white.opacity(0.6)).monospacedDigit()
+                                }
+                                Slider(value: $settings.voiceSpeed, in: 0.85...1.3, step: 0.05)
+                                    .tint(Theme.glow)
+                            }
+                        }
+                        Toggle("Cevapları sesli oku", isOn: $settings.speakReplies)
+                        Button {
+                            assistant.speech.speak("Merhaba \(settings.userName), ben \(settings.assistantName). Bugün senin için ne yapabilirim?")
+                        } label: {
+                            Label("Sesi dene", systemImage: "speaker.wave.2.fill")
+                        }
+                        .buttonStyle(HUDButtonStyle(prominent: false))
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
+                    } header: {
+                        HUDHeader(text: "Ses")
+                    } footer: {
+                        Text(settings.naturalVoice
+                             ? "Doğal ses, cevabı sunucu üzerinden insan gibi seslendirir. İnternet yoksa iPhone sesine geçer."
+                             : "iPhone sesi kullanılıyor. Daha iyi bir iPhone sesi için: Ayarlar → Erişilebilirlik → Seslendirilen İçerik → Sesler → Türkçe → Yelda (Gelişmiş) indir.")
+                            .font(.caption2).foregroundStyle(.white.opacity(0.4))
                     }
-                    Button("iPhone Ayarlarını aç") {
-                        if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
-                    }
-                } header: {
-                    Text("İzinler")
-                } footer: {
-                    Text("Mikrofon, konuşma tanıma, bildirimler, alarmlar, takvim, konum ve rehber.")
-                }
+                    .glassRow()
 
-                Section("Jarvis'i hızlı açmak") {
-                    Label("\"Hey Siri, Jarvis\" deyin: açılır ve dinlemeye başlar.", systemImage: "mic.circle")
-                    Label("\"Hey Siri, Jarvis'e söyle\": söylediğinizi doğrudan iletir.", systemImage: "text.bubble")
-                    Label("Arkaya Dokunma: Ayarlar → Erişilebilirlik → Dokunma → Arkaya Dokunma → Çift Dokunma → \"Jarvis'i Dinlet\".", systemImage: "hand.tap")
+                    Section {
+                        TextField("Adın", text: $settings.userName)
+                        TextField("Asistanın adı", text: $settings.assistantName)
+                        Toggle("Açılınca hemen dinlemeye başla", isOn: $settings.autoListen)
+                    } header: {
+                        HUDHeader(text: "Kişisel")
+                    }
+                    .glassRow()
+
+                    Section {
+                        Button {
+                            Task { await assistant.requestAllPermissions() }
+                        } label: { Label("Tüm izinleri iste", systemImage: "checkmark.shield") }
+                        Button {
+                            if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                        } label: { Label("iPhone Ayarlarını aç", systemImage: "gearshape") }
+                    } header: {
+                        HUDHeader(text: "İzinler")
+                    } footer: {
+                        Text("Mikrofon, konuşma tanıma, bildirimler, alarmlar, takvim, konum ve rehber.")
+                            .font(.caption2).foregroundStyle(.white.opacity(0.4))
+                    }
+                    .glassRow()
+
+                    Section {
+                        Label("\"Hey Siri, Jarvis\" deyin: açılır, \"Efendim?\" der ve dinler.", systemImage: "mic.circle")
+                        Label("Sol alttaki Jarvis düğmesi ya da reaktör: dinlemeyi yeniden açar.", systemImage: "hand.tap")
+                        Label("Arkaya Dokunma: Ayarlar → Erişilebilirlik → Dokunma → Arkaya Dokunma → Çift Dokunma → Jarvis.", systemImage: "iphone.gen3")
+                    } header: {
+                        HUDHeader(text: "Hızlı erişim")
+                    }
+                    .font(.footnote)
+                    .glassRow()
                 }
-                .font(.footnote)
+                .scrollContentBackground(.hidden)
+                .listRowSpacing(6)
             }
-            .scrollContentBackground(.hidden)
-            .background(Theme.background.ignoresSafeArea())
-            .navigationTitle("Ayarlar")
+            .background(Theme.background)
+            .toolbar(.hidden, for: .navigationBar)
         }
     }
 }
@@ -142,10 +244,8 @@ struct OnboardingView: View {
                     }
                 } label: {
                     HStack { if working { ProgressView().tint(.white) }; Text("İzinleri ver ve başla").bold() }
-                        .frame(maxWidth: .infinity).padding()
-                        .background(Theme.accent, in: RoundedRectangle(cornerRadius: 16))
-                        .foregroundStyle(.white)
                 }
+                .buttonStyle(HUDButtonStyle())
                 .padding(.horizontal, 24)
                 .disabled(working)
                 Button("Şimdilik geç", action: done).font(.footnote).foregroundStyle(.secondary).padding(.bottom, 20)

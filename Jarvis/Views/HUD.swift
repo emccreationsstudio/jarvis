@@ -113,3 +113,153 @@ struct ReactorRings: View {
             .shadow(color: Theme.glow.opacity(0.8), radius: 6)
     }
 }
+
+// MARK: - Ortak arayüz parçaları (Listeler · Hafıza · Ayarlar)
+
+/// Seçilen görsel, karartılmış ve hafif bulanık — diğer sekmelerin arka planı
+struct HUDBackdrop: View {
+    var dim: Double = 0.55
+    var body: some View {
+        GeometryReader { g in
+            ZStack {
+                Image("Backdrop")
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: g.size.width, height: g.size.height)
+                    .clipped()
+                    .blur(radius: 2)
+                Color.black.opacity(dim)
+                LinearGradient(colors: [.black.opacity(0.35), .clear, .black.opacity(0.45)],
+                               startPoint: .top, endPoint: .bottom)
+            }
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+    }
+}
+
+/// Cam görünümlü satır / kart zemini
+struct GlassRow: View {
+    var radius: CGFloat = 14
+    var body: some View {
+        RoundedRectangle(cornerRadius: radius, style: .continuous)
+            .fill(.ultraThinMaterial)
+            .overlay(
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .fill(Theme.card)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .stroke(Theme.cardStroke, lineWidth: 1)
+            )
+            .padding(.vertical, 3)
+    }
+}
+
+/// Bölüm başlığı: ince, aralıklı, mavi
+struct HUDHeader: View {
+    let text: String
+    var body: some View {
+        Text(text.uppercased(with: Locale(identifier: "tr_TR")))
+            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+            .tracking(2.5)
+            .foregroundStyle(Theme.glow.opacity(0.85))
+    }
+}
+
+/// Ekran başlığı (büyük, ışıklı)
+struct HUDTitle: View {
+    let text: String
+    var subtitle: String? = nil
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(text.uppercased(with: Locale(identifier: "tr_TR")))
+                .font(.system(size: 26, weight: .light, design: .monospaced))
+                .tracking(6)
+                .foregroundStyle(Theme.glow)
+                .shadow(color: Theme.glow.opacity(0.6), radius: 8)
+            if let subtitle {
+                Text(subtitle)
+                    .font(.system(size: 11, weight: .regular, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Parlayan ana düğme
+struct HUDButtonStyle: ButtonStyle {
+    var prominent = true
+    var tint: Color = Theme.accent
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 18).padding(.vertical, 12)
+            .frame(maxWidth: .infinity)
+            .background(
+                Capsule().fill(prominent
+                    ? AnyShapeStyle(LinearGradient(colors: [tint, tint.opacity(0.65)], startPoint: .top, endPoint: .bottom))
+                    : AnyShapeStyle(Color.white.opacity(0.08)))
+            )
+            .overlay(Capsule().stroke(tint.opacity(prominent ? 0.9 : 0.5), lineWidth: 1))
+            .shadow(color: prominent ? tint.opacity(0.55) : .clear, radius: configuration.isPressed ? 4 : 10)
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
+/// Işıklı sekme seçici (Görevler · Alışveriş · Aranacak)
+struct HUDSegmented: View {
+    let items: [(title: String, icon: String, count: Int)]
+    @Binding var selection: Int
+    @Namespace private var ns
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(items.indices, id: \.self) { i in
+                let selected = selection == i
+                Button {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { selection = i }
+                    UISelectionFeedbackGenerator().selectionChanged()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: items[i].icon).font(.system(size: 12, weight: .semibold))
+                        Text(items[i].title).font(.system(size: 13, weight: .semibold))
+                        if items[i].count > 0 {
+                            Text("\(items[i].count)")
+                                .font(.system(size: 11, weight: .bold, design: .rounded))
+                                .padding(.horizontal, 6).padding(.vertical, 1)
+                                .background(Capsule().fill(selected ? Color.white.opacity(0.25) : Theme.glow.opacity(0.2)))
+                        }
+                    }
+                    .foregroundStyle(selected ? .white : .white.opacity(0.6))
+                    .padding(.vertical, 9)
+                    .frame(maxWidth: .infinity)
+                    .background {
+                        if selected {
+                            Capsule()
+                                .fill(LinearGradient(colors: [Theme.accent, Theme.accent.opacity(0.6)], startPoint: .top, endPoint: .bottom))
+                                .shadow(color: Theme.glow.opacity(0.6), radius: 8)
+                                .matchedGeometryEffect(id: "seg", in: ns)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(4)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().stroke(Theme.cardStroke, lineWidth: 1))
+    }
+}
+
+/// Liste satırlarına cam zemin + ayraçsız görünüm
+extension View {
+    func glassRow() -> some View {
+        self
+            .listRowBackground(GlassRow())
+            .listRowSeparator(.hidden)
+    }
+}

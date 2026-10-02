@@ -29,7 +29,14 @@ struct RootView: View {
     }
 
     var body: some View {
-        TabView(selection: $tab) {
+        TabView(selection: Binding(
+            get: { tab },
+            set: { new in
+                // Sol alttaki "Jarvis" düğmesi: her basışta dinleme modunu aç
+                if new == 0 { assistant.startListening() }
+                tab = new
+            }
+        )) {
             TalkView()
                 .tabItem { Label("Jarvis", systemImage: "waveform.circle.fill") }
                 .tag(0)
@@ -265,22 +272,40 @@ struct TalkView: View {
 
     private var inputBar: some View {
         HStack(spacing: 10) {
-            TextField("Yazarak sor…", text: $input, axis: .vertical)
+            Image(systemName: "keyboard")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(Theme.glow.opacity(0.8))
+            TextField("", text: $input, prompt: Text("Jarvis'e yaz…").foregroundColor(.white.opacity(0.45)), axis: .vertical)
                 .lineLimit(1...4)
                 .focused($typing)
-                .padding(.horizontal, 14).padding(.vertical, 10)
-                .background(Theme.card, in: RoundedRectangle(cornerRadius: 18))
-                .overlay(RoundedRectangle(cornerRadius: 18).stroke(Theme.cardStroke, lineWidth: 1))
                 .submitLabel(.send)
                 .onSubmit(sendTyped)
-            if !input.trimmingCharacters(in: .whitespaces).isEmpty {
-                Button(action: sendTyped) {
-                    Image(systemName: "arrow.up.circle.fill").font(.system(size: 32))
-                }
-                .disabled(assistant.phase == .thinking)
+                .foregroundStyle(.white)
+            Button(action: sendTyped) {
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 34, height: 34)
+                    .background(
+                        Circle().fill(canSend ? Theme.accent : Color.white.opacity(0.12))
+                    )
+                    .shadow(color: canSend ? Theme.glow.opacity(0.7) : .clear, radius: 8)
             }
+            .disabled(!canSend)
         }
+        .padding(.leading, 14).padding(.trailing, 6).padding(.vertical, 6)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().stroke(typing ? Theme.glow.opacity(0.8) : Theme.cardStroke, lineWidth: typing ? 1.5 : 1))
+        .shadow(color: typing ? Theme.glow.opacity(0.35) : .clear, radius: 10)
         .padding(.bottom, 10)
+        .onChange(of: typing) { _, isTyping in
+            if isTyping { assistant.pauseForTyping() }   // yazarken dinleme dursun
+        }
+        .animation(.easeInOut(duration: 0.2), value: typing)
+    }
+
+    private var canSend: Bool {
+        !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && assistant.phase != .thinking
     }
 
     private func sendTyped() {

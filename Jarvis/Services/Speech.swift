@@ -181,33 +181,130 @@ final class SpeechService: NSObject, ObservableObject {
     }
 
     // MARK: Konuşma
+    //
+    // Doğal ses: sunucu üzerinden OpenAI sesi (akıcı, insan gibi). İlk cümle hemen istenir,
+    // gerisi paralel hazırlanır → bekleme kısa olur. İnternet/sunucu yoksa iPhone sesine düşer.
+
+    private var player: AVAudioPlayer?
+    private var queue: [Task<Data?, Never>] = []
+    private var queueTexts: [String] = []
+    private var playTask: Task<Void, Never>?
 
     func speak(_ text: String, completion: (() -> Void)? = nil) {
         speakDone = nil          // önceki konuşmanın devamı tetiklenmesin
-        if synth.isSpeaking { synth.stopSpeaking(at: .immediate) }
-        guard !text.isEmpty else { completion?(); return }
+        haltAudio()
+        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { completion?(); return }
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
             try session.setActive(true)
         } catch {}
-        let utt = AVSpeechUtterance(string: text)
-        utt.voice = Self.bestTurkishVoice()
-        utt.rate = 0.52
-        utt.pitchMultiplier = 0.95
         speakDone = completion
         isSpeaking = true
+
+        let s = AppSettings.shared
+        guard s.naturalVoice, s.isConfigured else { speakSystem(clean); return }
+
+        let chunks = Self.chunks(clean)
+        let voice = s.voiceName, speed = s.voiceSpeed, base = s.serverURL, token = s.token
+        queueTexts = chunks
+        queue = chunks.map { chunk in
+            Task.detached { await SpeechService.fetchTTS(chunk, voice: voice, speed: speed, base: base, token: token) }
+        }
+        playTask = Task { [weak self] in await self?.playQueue() }
+    }
+
+    private func playQueue() async {
+        var index = 0
+        while index < queue.count {
+            let data = await queue[index].value
+            guard isSpeaking, !Task.isCancelled else { return }
+            guard let data, let p = try? AVAudioPlayer(data: data) else {
+                // Doğal ses alınamadı → kalanını iPhone sesiyle oku
+                speakSystem(queueTexts[index...].joined(separator: " "))
+                return
+            }
+            player = p
+            p.prepareToPlay()
+            p.play()
+            while p.isPlaying && isSpeaking && !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+            guard isSpeaking, !Task.isCancelled else { return }
+            index += 1
+        }
+        finishSpeaking()
+    }
+
+    private func speakSystem(_ text: String) {
+        let utt = AVSpeechUtterance(string: text)
+        utt.voice = Self.bestTurkishVoice()
+        utt.rate = 0.5
+        utt.pitchMultiplier = 0.92
+        utt.postUtteranceDelay = 0.05
         synth.speak(utt)
+    }
+
+    fileprivate func finishSpeaking() {
+        guard isSpeaking else { return }
+        isSpeaking = false
+        player = nil
+        queue = []
+        queueTexts = []
+        let cb = speakDone
+        speakDone = nil
+        cb?()
+    }
+
+    private func haltAudio() {
+        playTask?.cancel(); playTask = nil
+        queue.forEach { $0.cancel() }
+        queue = []
+        queueTexts = []
+        player?.stop(); player = nil
+        if synth.isSpeaking { synth.stopSpeaking(at: .immediate) }
     }
 
     /// Konuşmayı keser. Bekleyen tamamlama yine çağrılır (akış devam etsin diye).
     func stopSpeaking() {
-        guard synth.isSpeaking || isSpeaking else { return }
-        synth.stopSpeaking(at: .immediate)
+        guard isSpeaking || synth.isSpeaking || player != nil else { return }
+        haltAudio()
         isSpeaking = false
         let cb = speakDone
         speakDone = nil
         cb?()
+    }
+
+    /// İlk cümle ayrı (hızlı başlasın), gerisi en fazla ~300 karakterlik parçalar.
+    nonisolated static func chunks(_ text: String) -> [String] {
+        var sentences: [String] = []
+        text.enumerateSubstrings(in: text.startIndex..., options: [.bySentences, .localized]) { sub, _, _, _ in
+            if let t = sub?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty { sentences.append(t) }
+        }
+        if sentences.isEmpty { return [text] }
+        var out = [sentences.removeFirst()]
+        var current = ""
+        for s in sentences {
+            if current.count + s.count > 300, !current.isEmpty { out.append(current); current = "" }
+            current += (current.isEmpty ? "" : " ") + s
+        }
+        if !current.isEmpty { out.append(current) }
+        return out
+    }
+
+    nonisolated static func fetchTTS(_ text: String, voice: String, speed: Double, base: String, token: String) async -> Data? {
+        let root = base.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: root + "/tts") else { return nil }
+        var req = URLRequest(url: url, timeoutInterval: 20)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let payload: [String: Any] = ["text": text, "voice": voice, "speed": speed]
+        req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+        guard let result = try? await URLSession.shared.data(for: req) else { return nil }
+        guard (result.1 as? HTTPURLResponse)?.statusCode == 200, !result.0.isEmpty else { return nil }
+        return result.0
     }
 
     private static func bestTurkishVoice() -> AVSpeechSynthesisVoice? {
@@ -221,14 +318,8 @@ final class SpeechService: NSObject, ObservableObject {
 extension SpeechService: AVSpeechSynthesizerDelegate {
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
         Task { @MainActor in
-            self.isSpeaking = false
-            let cb = self.speakDone
-            self.speakDone = nil
-            cb?()
+            guard !self.synth.isSpeaking else { return }
+            self.finishSpeaking()
         }
-    }
-
-    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        Task { @MainActor in self.isSpeaking = false }
     }
 }
