@@ -179,8 +179,8 @@ struct TalkView: View {
     private var hint: String {
         if !assistant.conversing && assistant.phase == .idle { return "REAKTÖRE DOKUN VE KONUŞ" }
         switch assistant.phase {
-        case .listening: return "“BİTTİ” → YAP   ·   “JARVIS KAPAN” → KAPAT"
-        case .thinking: return "İŞLENİYOR"
+        case .listening: return "KONUŞ · SUSUNCA CEVAPLARIM · “JARVIS KAPAN” → KAPAT"
+        case .thinking: return "DÜŞÜNÜYORUM · EKLEMEK İSTERSEN KONUŞMAYA DEVAM ET"
         case .speaking: return "SUSTURMAK İÇİN DOKUN"
         case .idle: return ""
         }
@@ -248,7 +248,7 @@ struct TalkView: View {
                     ForEach(Array(assistant.pendingNotes.enumerated()), id: \.offset) { _, note in
                         PendingBubble(text: note)
                     }
-                    if assistant.phase == .listening, !assistant.speech.partialText.isEmpty {
+                    if assistant.speech.isListening, !assistant.speech.partialText.isEmpty {
                         Bubble(message: ChatMessage(role: .user, text: assistant.speech.partialText))
                             .opacity(0.6)
                             .id("partial")
@@ -297,11 +297,17 @@ struct TalkView: View {
         .background(.ultraThinMaterial, in: Capsule())
         .overlay(Capsule().stroke(typing ? Theme.glow.opacity(0.8) : Theme.cardStroke, lineWidth: typing ? 1.5 : 1))
         .shadow(color: typing ? Theme.glow.opacity(0.35) : .clear, radius: 10)
-        .padding(.bottom, 10)
+        .padding(.bottom, 10 + (typing ? 0 : Self.floatingTabBarClearance))
         .onChange(of: typing) { _, isTyping in
             if isTyping { assistant.pauseForTyping() }   // yazarken dinleme dursun
         }
         .animation(.easeInOut(duration: 0.2), value: typing)
+    }
+
+    /// iOS 26'da sekme çubuğu içeriğin üstünde yüzer → yazı alanını onun üstüne taşı
+    static var floatingTabBarClearance: CGFloat {
+        if #available(iOS 26.0, *) { return 64 }
+        return 0
     }
 
     private var canSend: Bool {
@@ -319,7 +325,7 @@ struct TalkView: View {
 private struct EmptyHint: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Jarvis açılınca seni dinler (ya da reaktöre dokun). İstediğin kadar konuş; “bitti” deyince yaparım, soru sorarsan hemen cevaplarım. “Jarvis kapan” ile kapanırım.")
+            Text("Jarvis açılınca seni dinler (ya da reaktöre dokun). Rahatça konuş; susunca hepsini birlikte düşünüp cevaplarım. Bir şey eklemek istersen konuşmaya devam et. “Jarvis kapan” ile kapanırım.")
                 .font(.footnote).foregroundStyle(.white.opacity(0.8))
             Text("Örnekler").font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.top, 4)
             ForEach([
@@ -491,8 +497,8 @@ struct OrbButton: View {
     private var hint: String {
         if !assistant.conversing && assistant.phase == .idle { return "DOKUN VE KONUŞ" }
         switch assistant.phase {
-        case .listening: return "“BİTTİ” → YAP   ·   “JARVIS KAPAN” → KAPAT"
-        case .thinking: return "İŞLENİYOR"
+        case .listening: return "KONUŞ · SUSUNCA CEVAPLARIM · “JARVIS KAPAN” → KAPAT"
+        case .thinking: return "DÜŞÜNÜYORUM · EKLEMEK İSTERSEN KONUŞMAYA DEVAM ET"
         case .speaking: return "SUSTURMAK İÇİN DOKUN"
         case .idle: return ""
         }

@@ -43,26 +43,32 @@ final class Reminders {
         cancel(task)
         guard !task.done, let due = task.due, due > Date() else { return }
 
+        // "Tüm hatırlatmalar alarm gibi" açıksa normal önemdekiler de alarm olarak çalar
+        let asAlarm = task.priority == .critical || task.priority == .high
+            || (task.priority == .normal && AppSettings.shared.alarmAll)
+
         switch task.priority {
         case .low:
             add(id: "\(task.id)-0", task: task, at: due, body: "Hatırlatma", sound: nil)
-        case .normal:
+        case .normal where !asAlarm:
             add(id: "\(task.id)-0", task: task, at: due, body: "Zamanı geldi", sound: .default)
-        case .high:
-            addRepeating(task, due: due)
-        case .critical:
-            let pre = due.addingTimeInterval(-30 * 60)
-            if pre > Date() {
-                add(id: "\(task.id)-pre", task: task, at: pre, body: "30 dakika sonra · önemli", sound: .default)
+        default:
+            if task.priority == .critical {
+                let pre = due.addingTimeInterval(-30 * 60)
+                if pre > Date() {
+                    add(id: "\(task.id)-pre", task: task, at: pre, body: "30 dakika sonra · önemli", sound: .default)
+                }
             }
             Task {
-                if let alarmID = await scheduleAlarm(task, at: due) {
+                let result = await scheduleAlarm(title: task.title, at: due)
+                if let alarmID = result.id {
                     if var t = Store.shared.task(task.id) {
                         t.alarmID = alarmID
                         if let i = Store.shared.tasks.firstIndex(where: { $0.id == t.id }) { Store.shared.tasks[i] = t }
                     }
                 } else {
-                    addRepeating(task, due: due)
+                    lastAlarmError = result.error
+                    addRepeating(task, due: due)   // alarm kurulamazsa: tekrarlayan sesli bildirim
                 }
             }
         }
@@ -89,17 +95,29 @@ final class Reminders {
 
     // MARK: - AlarmKit (iOS 26)
 
-    private func scheduleAlarm(_ task: TaskItem, at date: Date) async -> String? {
+    /// Son alarm kurma hatası (Ayarlar'da gösterilir)
+    private(set) var lastAlarmError: String?
+
+    /// Ayarlar → "Alarmı dene": 10 saniye sonra çalan deneme alarmı
+    func testAlarm() async -> String {
+        let result = await scheduleAlarm(title: "Jarvis alarm testi", at: Date().addingTimeInterval(10))
+        if result.id != nil { return "Alarm 10 saniye sonra çalacak. Telefonu kilitleyip bekleyebilirsin." }
+        return "Alarm kurulamadı: \(result.error ?? "bilinmeyen hata")"
+    }
+
+    private func scheduleAlarm(title: String, at date: Date) async -> (id: String?, error: String?) {
         #if canImport(AlarmKit)
         if #available(iOS 26.0, *) {
             do {
                 let manager = AlarmManager.shared
                 if manager.authorizationState != .authorized {
                     let state = try await manager.requestAuthorization()
-                    guard state == .authorized else { return nil }
+                    guard state == .authorized else {
+                        return (nil, "Alarm izni kapalı. iPhone Ayarları → Jarvis → Alarmlar'ı açın.")
+                    }
                 }
                 let alert = AlarmPresentation.Alert(
-                    title: LocalizedStringResource(stringLiteral: task.title),
+                    title: LocalizedStringResource(stringLiteral: title),
                     stopButton: AlarmButton(text: "Tamam", textColor: .white, systemImageName: "checkmark.circle")
                 )
                 let attributes = AlarmAttributes<JarvisAlarmMetadata>(
@@ -113,13 +131,14 @@ final class Reminders {
                     attributes: attributes
                 )
                 _ = try await manager.schedule(id: id, configuration: config)
-                return id.uuidString
+                lastAlarmError = nil
+                return (id.uuidString, nil)
             } catch {
-                return nil
+                return (nil, error.localizedDescription)
             }
         }
         #endif
-        return nil
+        return (nil, "Alarm özelliği iOS 26 ve sonrasında çalışır.")
     }
 
     private func cancelAlarm(_ idString: String) {

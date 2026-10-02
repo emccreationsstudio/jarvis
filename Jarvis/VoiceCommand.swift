@@ -51,6 +51,20 @@ enum VoiceCommand {
         return s
     }
 
+    /// Tamamlanmış bir komut ya da soru mu? (öyleyse kısa bekleyip cevap verilir)
+    static func isComplete(_ text: String) -> Bool {
+        if isQuestion(text) { return true }
+        let words = text.split(whereSeparator: { $0.isWhitespace }).map(norm)
+        guard let last = words.last else { return false }
+        // Türkçe emir kipi / istek sonları: "ekle", "hatırlat", "kur", "ara", "yaz", "sil", "oluştur", "ayarla"…
+        let commandEndings = ["le", "la", "lat", "let", "kur", "ara", "yaz", "sil", "yap", "aç", "kapat",
+                              "koy", "gönder", "bul", "planla", "oluştur", "ayarla", "hazırla", "çıkar", "bitir",
+                              "lütfen", "rica", "et", "edin", "eyim", "ayım", "ırım", "irim", "urum", "ürüm"]
+        if commandEndings.contains(where: { last.hasSuffix($0) }) { return true }
+        let markers = ["hatırlat", "ekle", "kur", "oluştur", "ara", "sil", "planla", "not"]
+        return words.contains(where: { w in markers.contains(where: { w.hasPrefix($0) }) }) && words.count >= 3
+    }
+
     /// Hemen sesli cevap gerektiren bir soru/istek mi?
     static func isQuestion(_ text: String) -> Bool {
         if text.contains("?") { return true }

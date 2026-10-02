@@ -26,7 +26,7 @@ final class SpeechService: NSObject, ObservableObject {
     @Published private(set) var level: Float = 0
 
     /// Bu kadar sessizlik olunca söylenen bir "parça" sayılır
-    var pauseInterval: TimeInterval = 1.8
+    var pauseInterval: TimeInterval = 1.3
 
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "tr-TR"))
     private let engine = AVAudioEngine()
@@ -240,8 +240,9 @@ final class SpeechService: NSObject, ObservableObject {
     private func speakSystem(_ text: String) {
         let utt = AVSpeechUtterance(string: text)
         utt.voice = Self.bestTurkishVoice()
-        utt.rate = 0.5
-        utt.pitchMultiplier = 0.92
+        let s = AppSettings.shared
+        utt.rate = Float(min(0.62, max(0.4, 0.5 * s.voiceSpeed)))
+        utt.pitchMultiplier = Float(0.8 + s.voiceTone * 0.4)
         utt.postUtteranceDelay = 0.05
         synth.speak(utt)
     }

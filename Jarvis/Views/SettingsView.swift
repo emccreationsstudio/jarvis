@@ -82,19 +82,26 @@ struct SettingsView: View {
     @EnvironmentObject var assistant: Assistant
     @State private var testResult: String?
     @State private var testing = false
+    @State private var alarmResult: String?
 
-    private let voices: [(id: String, label: String)] = [
-        ("onyx", "Onyx · derin erkek"),
-        ("ash", "Ash · sıcak erkek"),
-        ("echo", "Echo · net erkek"),
-        ("ballad", "Ballad · yumuşak erkek"),
-        ("verse", "Verse · enerjik"),
-        ("alloy", "Alloy · nötr"),
-        ("sage", "Sage · sakin kadın"),
-        ("coral", "Coral · neşeli kadın"),
-        ("shimmer", "Shimmer · parlak kadın"),
-        ("nova", "Nova · genç kadın")
-    ]
+    private var toneLabel: String {
+        switch settings.voiceTone {
+        case ..<0.13: return "Çok kalın"
+        case ..<0.38: return "Kalın"
+        case ..<0.63: return "Orta"
+        case ..<0.88: return "İnce"
+        default: return "Çok ince"
+        }
+    }
+
+    private var speedLabel: String {
+        switch settings.voiceSpeed {
+        case ..<0.93: return "Yavaş"
+        case ..<1.12: return "Normal"
+        case ..<1.27: return "Hızlı"
+        default: return "Çok hızlı"
+        }
+    }
 
     var body: some View {
         NavigationStack {
@@ -138,17 +145,36 @@ struct SettingsView: View {
                     Section {
                         Toggle("Doğal ses (yapay zekâ)", isOn: $settings.naturalVoice)
                         if settings.naturalVoice {
-                            Picker("Ses", selection: $settings.voiceName) {
-                                ForEach(voices, id: \.id) { Text($0.label).tag($0.id) }
+                            Picker("Ses", selection: $settings.voiceFemale) {
+                                Text("Erkek").tag(false)
+                                Text("Kadın").tag(true)
                             }
+                            .pickerStyle(.segmented)
+                        }
+                        Group {
                             VStack(alignment: .leading, spacing: 4) {
                                 HStack {
-                                    Text("Konuşma hızı")
+                                    Text("Ton")
                                     Spacer()
-                                    Text(String(format: "%.2fx", settings.voiceSpeed)).foregroundStyle(.white.opacity(0.6)).monospacedDigit()
+                                    Text(toneLabel).foregroundStyle(.white.opacity(0.6))
                                 }
-                                Slider(value: $settings.voiceSpeed, in: 0.85...1.3, step: 0.05)
-                                    .tint(Theme.glow)
+                                HStack(spacing: 8) {
+                                    Text("Kalın").font(.caption2).foregroundStyle(.white.opacity(0.5))
+                                    Slider(value: $settings.voiceTone, in: 0...1, step: 0.25).tint(Theme.glow)
+                                    Text("İnce").font(.caption2).foregroundStyle(.white.opacity(0.5))
+                                }
+                            }
+                        }
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text("Konuşma hızı")
+                                Spacer()
+                                Text(speedLabel).foregroundStyle(.white.opacity(0.6))
+                            }
+                            HStack(spacing: 8) {
+                                Image(systemName: "tortoise.fill").font(.caption).foregroundStyle(.white.opacity(0.5))
+                                Slider(value: $settings.voiceSpeed, in: 0.8...1.4, step: 0.05).tint(Theme.glow)
+                                Image(systemName: "hare.fill").font(.caption).foregroundStyle(.white.opacity(0.5))
                             }
                         }
                         Toggle("Cevapları sesli oku", isOn: $settings.speakReplies)
@@ -166,6 +192,27 @@ struct SettingsView: View {
                         Text(settings.naturalVoice
                              ? "Doğal ses, cevabı sunucu üzerinden insan gibi seslendirir. İnternet yoksa iPhone sesine geçer."
                              : "iPhone sesi kullanılıyor. Daha iyi bir iPhone sesi için: Ayarlar → Erişilebilirlik → Seslendirilen İçerik → Sesler → Türkçe → Yelda (Gelişmiş) indir.")
+                            .font(.caption2).foregroundStyle(.white.opacity(0.4))
+                    }
+                    .glassRow()
+
+                    Section {
+                        Toggle("Tüm hatırlatmalar alarm gibi çalsın", isOn: $settings.alarmAll)
+                        Button {
+                            Task { alarmResult = await Reminders.shared.testAlarm() }
+                        } label: {
+                            Label("Alarmı dene (10 sn)", systemImage: "alarm.fill")
+                        }
+                        .buttonStyle(HUDButtonStyle(prominent: false, tint: .orange))
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
+                        if let alarmResult {
+                            Text(alarmResult).font(.footnote).foregroundStyle(.white.opacity(0.6))
+                        }
+                    } header: {
+                        HUDHeader(text: "Hatırlatmalar")
+                    } footer: {
+                        Text("Alarm: sessiz modda bile çalar ve titreşir, kilit ekranında büyük gösterilir. Kapalıysa yalnızca önemli ve kritik işler alarm olur; düşük önemliler her zaman sessiz bildirimdir.")
                             .font(.caption2).foregroundStyle(.white.opacity(0.4))
                     }
                     .glassRow()

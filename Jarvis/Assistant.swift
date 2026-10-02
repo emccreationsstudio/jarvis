@@ -26,6 +26,14 @@ final class Assistant: ObservableObject {
         speech.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
+        // Yeniden konuşmaya başlanınca bekleyen gönderimi ertele
+        speech.$partialText
+            .removeDuplicates()
+            .sink { [weak self] text in
+                guard !text.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+                Task { @MainActor in self?.userIsSpeaking() }
+            }
+            .store(in: &cancellables)
     }
 
     // MARK: Sohbet modu
@@ -138,6 +146,7 @@ final class Assistant: ObservableObject {
 
     func endConversation() {
         idleTask?.cancel()
+        commitTask?.cancel()
         speech.stopMic()
         conversing = false
         closeAfterReply = false
@@ -179,10 +188,33 @@ final class Assistant: ObservableObject {
         }
     }
 
+    // Akış:
+    //  • Her cümle not olarak birikir.
+    //  • Kısa bir sessizlikten sonra (komut/soru ise daha kısa) hepsi birlikte gönderilir — "bitti" demek gerekmez.
+    //  • Bu arada konuşmaya devam edilirse bekler, yeni söylenenleri de ekler.
+    //  • Jarvis düşünürken araya girilirse istek iptal edilir; eski + yeni söylenenler birlikte yeniden düşünülür.
+
+    private var commitTask: Task<Void, Never>?
+    private var inflight: Task<Void, Never>?
+    private var inflightText: String?
+    private var inflightMessageID: String?
+
     private func handleSegment(_ segment: String) {
         guard conversing else { return }
         armIdleTimer()
         let parsed = VoiceCommand.parse(segment)
+
+        // Düşünürken araya girildi → isteği iptal et, söyleneni geri al ve birleştir
+        if let prev = inflightText, phase == .thinking {
+            inflight?.cancel()
+            inflight = nil
+            inflightText = nil
+            if let id = inflightMessageID { store.messages.removeAll { $0.id == id } }
+            inflightMessageID = nil
+            pendingNotes.insert(prev, at: 0)
+            phase = .listening
+        }
+
         switch parsed.end {
         case .close:
             if !parsed.body.isEmpty { pendingNotes.append(parsed.body) }
@@ -191,17 +223,35 @@ final class Assistant: ObservableObject {
             if !parsed.body.isEmpty { pendingNotes.append(parsed.body) }
             finish(close: false)
         case .none:
-            if VoiceCommand.isQuestion(parsed.body) {
-                send(parsed.body)            // soruya hemen cevap; bekleyen notlar durur
-            } else {
-                pendingNotes.append(parsed.body)
-                UISelectionFeedbackGenerator().selectionChanged()
-            }
+            guard !parsed.body.isEmpty else { return }
+            pendingNotes.append(parsed.body)
+            UISelectionFeedbackGenerator().selectionChanged()
+            scheduleCommit(quick: VoiceCommand.isComplete(parsed.body))
         }
+    }
+
+    /// Kısa bekleyip gönder. Bu sürede yeniden konuşulursa iptal edilir.
+    private func scheduleCommit(quick: Bool) {
+        commitTask?.cancel()
+        let delay: UInt64 = quick ? 700_000_000 : 1_800_000_000
+        commitTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: delay)
+            guard !Task.isCancelled, let self, self.conversing else { return }
+            guard self.speech.partialText.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+            self.finish(close: false)
+        }
+    }
+
+    /// Kullanıcı yeniden konuşmaya başladı → bekleyen gönderimi ertele
+    private func userIsSpeaking() {
+        commitTask?.cancel()
+        commitTask = nil
     }
 
     /// Bekleyen notları işle. close: sonra sohbeti kapat.
     private func finish(close: Bool) {
+        commitTask?.cancel()
+        commitTask = nil
         let text = pendingNotes.joined(separator: " ")
         pendingNotes = []
         if text.isEmpty {
@@ -224,11 +274,10 @@ final class Assistant: ObservableObject {
         guard !text.isEmpty else { return }
         errorText = nil
         lastRoute = nil
-        store.messages.append(ChatMessage(role: .user, text: text))
-        if conversing {
-            idleTask?.cancel()
-            speech.stopMic()                 // Jarvis konuşurken kendini duymasın
-        }
+        inflight?.cancel()
+        let message = ChatMessage(role: .user, text: text)
+        store.messages.append(message)
+        if conversing { idleTask?.cancel() }   // mikrofon açık kalır: araya girilebilir
 
         guard settings.isConfigured else {
             reply("Önce Ayarlar'dan sunucu adresini ve uygulama şifresini girmen gerekiyor.", speak: true)
@@ -236,18 +285,27 @@ final class Assistant: ObservableObject {
         }
 
         phase = .thinking
-        Task {
+        inflightText = text
+        inflightMessageID = message.id
+        inflight = Task { [weak self] in
+            guard let self else { return }
             do {
-                let response = try await request(text)
+                let response = try await self.request(text)
+                guard !Task.isCancelled else { return }
+                self.inflightText = nil
+                self.inflightMessageID = nil
                 var extras: [String] = []
                 for action in response.actions {
-                    if let note = await apply(action) { extras.append(note) }
+                    if let note = await self.apply(action) { extras.append(note) }
                 }
                 let full = ([response.reply] + extras).filter { !$0.isEmpty }.joined(separator: " ")
-                reply(full, speak: conversing || settings.speakReplies)
+                self.reply(full, speak: self.conversing || self.settings.speakReplies)
             } catch {
-                errorText = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                reply("Şu anda sunucuya ulaşamıyorum. İnternet bağlantını ya da Ayarlar'daki sunucu bilgisini kontrol eder misin?", speak: conversing || settings.speakReplies)
+                guard !Task.isCancelled else { return }
+                self.inflightText = nil
+                self.inflightMessageID = nil
+                self.errorText = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                self.reply("Şu anda sunucuya ulaşamıyorum. İnternet bağlantını ya da Ayarlar'daki sunucu bilgisini kontrol eder misin?", speak: self.conversing || self.settings.speakReplies)
             }
         }
     }
@@ -255,6 +313,7 @@ final class Assistant: ObservableObject {
     private func reply(_ text: String, speak: Bool) {
         store.messages.append(ChatMessage(role: .assistant, text: text))
         if speak {
+            if conversing { speech.stopMic() }   // Jarvis konuşurken kendini duymasın
             phase = .speaking
             speech.speak(text) { [weak self] in self?.afterReply() }
         } else {

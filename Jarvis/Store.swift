@@ -145,8 +145,21 @@ final class AppSettings: ObservableObject {
     /// Uygulama her açıldığında (Siri, ikon, Arkaya Dokunma) kendiliğinden dinlemeye başla
     @Published var autoListen: Bool { didSet { UserDefaults.standard.set(autoListen, forKey: "autoListen") } }
     /// Doğal (yapay zekâ) ses; kapalıysa iPhone'un kendi sesi
+    /// Normal önemdeki hatırlatmalar da alarm gibi çalsın (düşük önem sessiz kalır)
+    @Published var alarmAll: Bool { didSet { UserDefaults.standard.set(alarmAll, forKey: "alarmAll") } }
     @Published var naturalVoice: Bool { didSet { UserDefaults.standard.set(naturalVoice, forKey: "naturalVoice") } }
-    @Published var voiceName: String { didSet { UserDefaults.standard.set(voiceName, forKey: "voiceName") } }
+    /// Ses: kadın / erkek ve kalından inceye ton (0 = en kalın, 1 = en ince)
+    @Published var voiceFemale: Bool { didSet { UserDefaults.standard.set(voiceFemale, forKey: "voiceFemale") } }
+    @Published var voiceTone: Double { didSet { UserDefaults.standard.set(voiceTone, forKey: "voiceTone") } }
+
+    static let maleVoices = ["onyx", "ash", "ballad", "echo", "verse"]      // kalın → ince
+    static let femaleVoices = ["sage", "coral", "alloy", "shimmer", "nova"] // kalın → ince
+
+    var voiceName: String {
+        let list = voiceFemale ? Self.femaleVoices : Self.maleVoices
+        let i = Int((voiceTone * Double(list.count - 1)).rounded())
+        return list[max(0, min(list.count - 1, i))]
+    }
     @Published var voiceSpeed: Double { didSet { UserDefaults.standard.set(voiceSpeed, forKey: "voiceSpeed") } }
 
     private init() {
@@ -156,8 +169,10 @@ final class AppSettings: ObservableObject {
         assistantName = d.string(forKey: "assistantName") ?? "Jarvis"
         speakReplies = d.object(forKey: "speakReplies") as? Bool ?? true
         autoListen = d.object(forKey: "autoListen") as? Bool ?? true
+        alarmAll = d.object(forKey: "alarmAll") as? Bool ?? true
         naturalVoice = d.object(forKey: "naturalVoice") as? Bool ?? true
-        voiceName = d.string(forKey: "voiceName") ?? "onyx"
+        voiceFemale = d.object(forKey: "voiceFemale") as? Bool ?? false
+        voiceTone = d.object(forKey: "voiceTone") as? Double ?? 0
         voiceSpeed = d.object(forKey: "voiceSpeed") as? Double ?? 1.05
         token = Keychain.get("appToken") ?? ""
     }
