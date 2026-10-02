@@ -6,7 +6,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = notificationDelegate
-        Task { @MainActor in Reminders.shared.registerCategories() }
+        Task { @MainActor in
+            Reminders.shared.registerCategories()
+            Reminders.shared.scheduleHolidays()
+        }
         return true
     }
 }

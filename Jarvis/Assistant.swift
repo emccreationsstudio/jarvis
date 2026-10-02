@@ -15,6 +15,8 @@ final class Assistant: ObservableObject {
     @Published var errorText: String?
     /// Siri / Kısayol / Arkaya Dokunma ile açılınca dinlemeye başla
     @Published var listenRequested = false
+    /// Jarvis "takvimi göster" dediğinde açılacak sayfa
+    @Published var calendarRequest: CalendarPage?
 
     let speech = SpeechService()
     private let store = Store.shared
@@ -386,7 +388,18 @@ final class Assistant: ObservableObject {
             shopping: store.shopping.map { .init(id: $0.id, name: $0.name) },
             calls: store.calls.map { .init(id: $0.id, person: $0.person, reason: $0.reason) },
             events: events,
-            memory: store.memory.suffix(80).map { .init(id: $0.id, text: $0.text) }
+            memory: store.memory.suffix(80).map { .init(id: $0.id, text: $0.text) },
+            specials: store.specials.map { d in
+                let next = d.next()
+                return ChatRequest.Context.SD(id: d.id, title: d.title, person: d.person, kind: d.kind.label,
+                                              next: DateText.dayKey(next), years: d.years(on: next))
+            },
+            holidays: Holiday.between(Date(), Date().addingTimeInterval(60 * 86400))
+                .filter { !$0.title.contains(". gün") || $0.title.hasSuffix("1. gün") }
+                .map { ChatRequest.Context.H(date: DateText.dayKey($0.date), title: $0.title) },
+            moments: store.moments.prefix(20).map {
+                ChatRequest.Context.MO(date: DateText.dayKey($0.date), title: $0.title, place: $0.place, note: $0.note)
+            }
         )
     }
 
@@ -465,6 +478,30 @@ final class Assistant: ObservableObject {
 
         case "forget":
             if let id = a.target_id { store.memory.removeAll { $0.id == id } }
+            return nil
+
+        case "add_special_day":
+            guard let title = a.title, !title.isEmpty, let date = DateText.parseDay(a.due) else { return nil }
+            let cal = Calendar.current
+            let c = cal.dateComponents([.year, .month, .day], from: date)
+            let thisYear = cal.component(.year, from: Date())
+            var day = SpecialDay(title: title, person: a.person, month: c.month ?? 1, day: c.day ?? 1,
+                                 kind: SpecialKind.from(a.note ?? title), note: nil)
+            if let y = c.year, y < thisYear { day.year = y }   // geçmiş yıl verildiyse: doğum / başlangıç yılı
+            store.addSpecial(day)
+            return nil
+
+        case "delete_special_day":
+            if let id = a.target_id { store.removeSpecial(id: id) }
+            return nil
+
+        case "add_moment":
+            guard let title = a.title, !title.isEmpty else { return nil }
+            store.addMoment(Moment(title: title, date: DateText.parseDay(a.due) ?? Date(), place: a.location, note: a.note))
+            return nil
+
+        case "show_calendar":
+            calendarRequest = CalendarPage(rawValue: a.note ?? "week") ?? .week
             return nil
 
         default:

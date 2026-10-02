@@ -70,6 +70,9 @@ struct ChatRequest: Encodable {
         struct C: Encodable { let id: String; let person: String; let reason: String? }
         struct E: Encodable { let start: String; let end: String?; let title: String; let location: String? }
         struct M: Encodable { let id: String; let text: String }
+        struct SD: Encodable { let id: String; let title: String; let person: String?; let kind: String; let next: String; let years: Int? }
+        struct H: Encodable { let date: String; let title: String }
+        struct MO: Encodable { let date: String; let title: String; let place: String?; let note: String? }
         let now: String
         let timezone: String
         let userName: String
@@ -79,6 +82,9 @@ struct ChatRequest: Encodable {
         let calls: [C]
         let events: [E]
         let memory: [M]
+        let specials: [SD]
+        let holidays: [H]
+        let moments: [MO]
     }
     let message: String
     let history: [HistoryItem]

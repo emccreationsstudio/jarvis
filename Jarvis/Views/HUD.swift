@@ -263,3 +263,27 @@ extension View {
             .listRowSeparator(.hidden)
     }
 }
+
+/// Klavyenin ekranda kapladığı yükseklik (iOS 26 sekme ekranlarında içerik kendiliğinden kaymadığı için)
+@MainActor
+final class KeyboardObserver: ObservableObject {
+    @Published private(set) var height: CGFloat = 0
+    private var tokens: [NSObjectProtocol] = []
+
+    init() {
+        let nc = NotificationCenter.default
+        tokens.append(nc.addObserver(forName: UIResponder.keyboardWillChangeFrameNotification, object: nil, queue: .main) { [weak self] note in
+            guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+            let screen = UIScreen.main.bounds.height
+            let overlap = max(0, screen - frame.minY)
+            Task { @MainActor in self?.height = overlap }
+        })
+        tokens.append(nc.addObserver(forName: UIResponder.keyboardWillHideNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.height = 0 }
+        })
+    }
+
+    deinit {
+        tokens.forEach { NotificationCenter.default.removeObserver($0) }
+    }
+}

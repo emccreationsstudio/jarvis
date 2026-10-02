@@ -93,6 +93,65 @@ final class Reminders {
         center.add(UNNotificationRequest(identifier: id, content: content, trigger: trigger))
     }
 
+    // MARK: - Özel günler ve bayramlar
+
+    /// Her yıl tekrar eder: 1 hafta önce 10:00 ve o gün 09:00
+    func scheduleSpecial(_ d: SpecialDay) {
+        cancelSpecial(d)
+        let who = d.person.map { " · \($0)" } ?? ""
+        addYearly(id: "\(d.id)-sd-0", title: "Bugün: \(d.title)", body: d.kind.label + who, month: d.month, day: d.day, hour: 9)
+        // 7 gün öncesi: ay/gün hesabı (artık yıl farkı önemsiz)
+        let cal = Calendar.current
+        if let ref = cal.date(from: DateComponents(year: 2027, month: d.month, day: d.day)),
+           let before = cal.date(byAdding: .day, value: -7, to: ref) {
+            let c = cal.dateComponents([.month, .day], from: before)
+            addYearly(id: "\(d.id)-sd-7", title: "1 hafta sonra: \(d.title)", body: d.kind == .birthday ? "Hediye ya da kutlama planı için zaman var." : d.kind.label + who,
+                      month: c.month ?? d.month, day: c.day ?? d.day, hour: 10)
+        }
+    }
+
+    func cancelSpecial(_ d: SpecialDay) {
+        center.removePendingNotificationRequests(withIdentifiers: ["\(d.id)-sd-0", "\(d.id)-sd-7"])
+    }
+
+    private func addYearly(id: String, title: String, body: String, month: Int, day: Int, hour: Int) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        let trigger = UNCalendarNotificationTrigger(dateMatching: DateComponents(month: month, day: day, hour: hour, minute: 0), repeats: true)
+        center.add(UNNotificationRequest(identifier: id, content: content, trigger: trigger))
+    }
+
+    /// Önümüzdeki 12 ayın bayram ve özel günleri: bir gün önce 20:00 (Anneler/Babalar/Sevgililer günü 3 gün önce)
+    func scheduleHolidays() {
+        let cal = Calendar.current
+        let now = Date()
+        guard let end = cal.date(byAdding: .month, value: 12, to: now) else { return }
+        var keep: Set<String> = []
+        for h in Holiday.between(now, end) where !h.title.contains(". gün") || h.title.hasSuffix("1. gün") {
+            let gift = ["Anneler Günü", "Babalar Günü", "Sevgililer Günü"].contains(h.title)
+            guard let at = cal.date(byAdding: .day, value: gift ? -3 : -1, to: h.date),
+                  let fire = cal.date(bySettingHour: 20, minute: 0, second: 0, of: at), fire > now else { continue }
+            let name = h.title.replacingOccurrences(of: " 1. gün", with: "")
+            let content = UNMutableNotificationContent()
+            content.title = gift ? "3 gün sonra: \(name)" : "Yarın: \(name)"
+            content.body = gift ? "Bir hediye ya da sürpriz düşünmek ister misin?" : "Planlarını buna göre yapabilirsin."
+            content.sound = .default
+            let comps = cal.dateComponents([.year, .month, .day, .hour, .minute], from: fire)
+            // Sabit kimlik: aynı bayram tekrar kurulursa üzerine yazılır
+            let id = "hol-" + DateText.dayKey(h.date) + "-" + String(name.filter { $0.isLetter || $0.isNumber }.prefix(24))
+            keep.insert(id)
+            center.add(UNNotificationRequest(identifier: id, content: content,
+                                             trigger: UNCalendarNotificationTrigger(dateMatching: comps, repeats: false)))
+        }
+        let wanted = keep
+        center.getPendingNotificationRequests { [center] pending in
+            let stale = pending.map(\.identifier).filter { $0.hasPrefix("hol-") && !wanted.contains($0) }
+            center.removePendingNotificationRequests(withIdentifiers: stale)
+        }
+    }
+
     // MARK: - AlarmKit (iOS 26)
 
     /// Son alarm kurma hatası (Ayarlar'da gösterilir)

@@ -35,6 +35,15 @@ final class CalendarService {
             .map { Event(start: $0.startDate, end: $0.isAllDay ? nil : $0.endDate, title: $0.title ?? "Etkinlik", location: $0.location) }
     }
 
+    /// Belirli aralıktaki etkinlikler (haftalık / yıllık görünüm için)
+    func events(from start: Date, to end: Date) -> [Event] {
+        guard hasAccess else { return [] }
+        let predicate = store.predicateForEvents(withStart: start, end: end, calendars: nil)
+        return store.events(matching: predicate)
+            .sorted { $0.startDate < $1.startDate }
+            .map { Event(start: $0.startDate, end: $0.isAllDay ? nil : $0.endDate, title: $0.title ?? "Etkinlik", location: $0.location) }
+    }
+
     /// Takvime etkinlik ekler; başarılıysa true.
     func add(title: String, start: Date, end: Date?, location: String?, important: Bool) async -> Bool {
         guard await requestAccess(), let calendar = store.defaultCalendarForNewEvents else { return false }

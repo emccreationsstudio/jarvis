@@ -11,6 +11,8 @@ final class Store: ObservableObject {
     @Published var calls: [CallItem] = [] { didSet { save() } }
     @Published var memory: [MemoryNote] = [] { didSet { save() } }
     @Published var messages: [ChatMessage] = [] { didSet { save() } }
+    @Published var specials: [SpecialDay] = [] { didSet { save() } }
+    @Published var moments: [Moment] = [] { didSet { save() } }
 
     private struct Snapshot: Codable {
         var tasks: [TaskItem]
@@ -18,6 +20,9 @@ final class Store: ObservableObject {
         var calls: [CallItem]
         var memory: [MemoryNote]
         var messages: [ChatMessage]
+        // Sonradan eklenenler: eski kayıtlarda yok → isteğe bağlı
+        var specials: [SpecialDay]?
+        var moments: [Moment]?
     }
 
     private var loading = false
@@ -41,16 +46,60 @@ final class Store: ObservableObject {
         calls = snap.calls
         memory = snap.memory
         messages = snap.messages
+        specials = snap.specials ?? []
+        moments = snap.moments ?? []
     }
 
     private func save() {
         guard !loading else { return }
-        let snap = Snapshot(tasks: tasks, shopping: shopping, calls: calls, memory: memory, messages: Array(messages.suffix(200)))
+        let snap = Snapshot(tasks: tasks, shopping: shopping, calls: calls, memory: memory,
+                            messages: Array(messages.suffix(200)), specials: specials, moments: moments)
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         if let data = try? encoder.encode(snap) {
             try? data.write(to: url, options: [.atomic, .completeFileProtection])
         }
+    }
+
+    // MARK: Özel günler ve anılar
+
+    func addSpecial(_ day: SpecialDay) {
+        // Aynı gün + aynı başlık varsa güncelle
+        if let i = specials.firstIndex(where: {
+            $0.month == day.month && $0.day == day.day
+                && $0.title.lowercased(with: Locale(identifier: "tr_TR")) == day.title.lowercased(with: Locale(identifier: "tr_TR"))
+        }) {
+            var d = day; d.id = specials[i].id
+            specials[i] = d
+        } else {
+            specials.append(day)
+        }
+        Reminders.shared.scheduleSpecial(specials.first { $0.month == day.month && $0.day == day.day && $0.title == day.title } ?? day)
+    }
+
+    func removeSpecial(id: String) {
+        if let d = specials.first(where: { $0.id == id }) { Reminders.shared.cancelSpecial(d) }
+        specials.removeAll { $0.id == id }
+    }
+
+    func addMoment(_ m: Moment) {
+        moments.append(m)
+        moments.sort { $0.date > $1.date }
+    }
+
+    /// Belirli bir güne düşen özel günler
+    func specials(on date: Date) -> [SpecialDay] { specials.filter { $0.occurs(on: date) } }
+
+    func moments(on date: Date) -> [Moment] {
+        moments.filter { Calendar.current.isDate($0.date, inSameDayAs: date) }
+    }
+
+    func tasks(on date: Date) -> [TaskItem] {
+        tasks.filter { t in
+            guard let due = t.due else { return false }
+            return Calendar.current.isDate(due, inSameDayAs: date)
+        }
+        .sorted { ($0.due ?? .distantFuture) < ($1.due ?? .distantFuture) }
     }
 
     // MARK: Görevler

@@ -4,6 +4,7 @@ struct RootView: View {
     @EnvironmentObject var assistant: Assistant
     @Environment(\.scenePhase) private var scenePhase
     @State private var tab = 0
+    @State private var calendarPage: CalendarPage = .week
     @AppStorage("didOnboard") private var didOnboard = false
 
     /// Her açılışta: ekranı temizle ve (ayar açıksa) dinlemeye başla
@@ -40,19 +41,32 @@ struct RootView: View {
             TalkView()
                 .tabItem { Label("Jarvis", systemImage: "waveform.circle.fill") }
                 .tag(0)
+            CalendarTab(page: $calendarPage) { request in
+                tab = 0
+                assistant.send(request)
+            }
+                .tabItem { Label("Takvim", systemImage: "calendar") }
+                .tag(1)
             ListsView()
                 .tabItem { Label("Listeler", systemImage: "checklist") }
-                .tag(1)
+                .tag(2)
             MemoryView()
                 .tabItem { Label("Hafıza", systemImage: "brain.head.profile") }
-                .tag(2)
+                .tag(3)
             SettingsView()
                 .tabItem { Label("Ayarlar", systemImage: "gearshape.fill") }
-                .tag(3)
+                .tag(4)
         }
         // "Hey Siri, Jarvis": istek uygulama tamamen açılmadan gelebilir → her fırsatta kontrol et
         .onAppear { activate() }
         .onChange(of: assistant.listenRequested) { _, _ in consumeListenRequest() }
+        // Jarvis "haftamı göster" dediğinde takvimi aç
+        .onChange(of: assistant.calendarRequest) { _, page in
+            guard let page else { return }
+            calendarPage = page
+            withAnimation { tab = 1 }
+            assistant.calendarRequest = nil
+        }
         .onChange(of: scenePhase) { _, p in
             switch p {
             case .active: activate()
@@ -72,6 +86,7 @@ struct TalkView: View {
     @EnvironmentObject var assistant: Assistant
     @State private var input = ""
     @FocusState private var typing: Bool
+    @StateObject private var keyboard = KeyboardObserver()
 
     /// Bu açılışta konuşulanlar (eski sohbet ekranda görünmez ama Jarvis hatırlar)
     private var visibleMessages: [ChatMessage] {
@@ -132,6 +147,11 @@ struct TalkView: View {
                                 .padding(.bottom, 6)
                         }
                         inputBar
+                            // Klavye açıkken hemen klavyenin üstünde; kapalıyken sekme çubuğunun üstünde
+                            .padding(.bottom, keyboard.height > 0
+                                     ? max(8, keyboard.height - ins.bottom + 8)
+                                     : 10 + Self.floatingTabBarClearance)
+                            .animation(.easeOut(duration: 0.25), value: keyboard.height)
                     }
                     .padding(.top, top)
                     .padding(.horizontal, side)
@@ -139,6 +159,7 @@ struct TalkView: View {
                 }
                 .overlay(alignment: .topTrailing) { menu }
             }
+            .ignoresSafeArea(.keyboard)
         }
     }
 
@@ -258,6 +279,7 @@ struct TalkView: View {
             }
             .scrollIndicators(.hidden)
             .scrollDismissesKeyboard(.interactively)
+            .simultaneousGesture(TapGesture().onEnded { typing = false })
             .onChange(of: store.messages.count) { _, _ in
                 if let last = store.messages.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } }
             }
@@ -272,9 +294,17 @@ struct TalkView: View {
 
     private var inputBar: some View {
         HStack(spacing: 10) {
-            Image(systemName: "keyboard")
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(Theme.glow.opacity(0.8))
+            Button {
+                typing.toggle()   // klavyeyi aç / kapat
+            } label: {
+                Image(systemName: typing ? "keyboard.chevron.compact.down" : "keyboard")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(Theme.glow)
+                    .frame(width: 34, height: 34)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(typing ? "Klavyeyi kapat" : "Klavyeyi aç")
             TextField("", text: $input, prompt: Text("Jarvis'e yaz…").foregroundColor(.white.opacity(0.45)), axis: .vertical)
                 .lineLimit(1...4)
                 .focused($typing)
@@ -293,11 +323,10 @@ struct TalkView: View {
             }
             .disabled(!canSend)
         }
-        .padding(.leading, 14).padding(.trailing, 6).padding(.vertical, 6)
+        .padding(.leading, 6).padding(.trailing, 6).padding(.vertical, 6)
         .background(.ultraThinMaterial, in: Capsule())
         .overlay(Capsule().stroke(typing ? Theme.glow.opacity(0.8) : Theme.cardStroke, lineWidth: typing ? 1.5 : 1))
         .shadow(color: typing ? Theme.glow.opacity(0.35) : .clear, radius: 10)
-        .padding(.bottom, 10 + (typing ? 0 : Self.floatingTabBarClearance))
         .onChange(of: typing) { _, isTyping in
             if isTyping { assistant.pauseForTyping() }   // yazarken dinleme dursun
         }
