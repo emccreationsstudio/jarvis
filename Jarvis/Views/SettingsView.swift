@@ -83,6 +83,7 @@ struct SettingsView: View {
     @State private var testResult: String?
     @State private var testing = false
     @State private var alarmResult: String?
+    @State private var syncStatus: String?
 
     private var toneLabel: String {
         switch settings.voiceTone {
@@ -213,6 +214,31 @@ struct SettingsView: View {
                         HUDHeader(text: "Hatırlatmalar")
                     } footer: {
                         Text("Alarm: sessiz modda bile çalar ve titreşir, kilit ekranında büyük gösterilir. Kapalıysa yalnızca önemli ve kritik işler alarm olur; düşük önemliler her zaman sessiz bildirimdir.")
+                            .font(.caption2).foregroundStyle(.white.opacity(0.4))
+                    }
+                    .glassRow()
+
+                    Section {
+                        Toggle("Bilgisayarla eşitle", isOn: $settings.syncEnabled)
+                            .onChange(of: settings.syncEnabled) { _, on in
+                                if on { Task { syncStatus = await SyncService.shared.pull() } }
+                            }
+                        if settings.syncEnabled {
+                            Button {
+                                Task { syncStatus = await SyncService.shared.pull() }
+                            } label: {
+                                Label("Şimdi eşitle", systemImage: "arrow.triangle.2.circlepath")
+                            }
+                            .buttonStyle(HUDButtonStyle(prominent: false))
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
+                            Text(syncStatus ?? SyncService.shared.lastStatus)
+                                .font(.footnote).foregroundStyle(.white.opacity(0.6))
+                        }
+                    } header: {
+                        HUDHeader(text: "Cihazlar arası eşitleme")
+                    } footer: {
+                        Text("Açıksa görevler, listeler, takvim, özel günler, anılar ve hafıza bilgisayardaki Jarvis ile ortak olur. Kapalıyken her cihaz kendi verisini tutar.")
                             .font(.caption2).foregroundStyle(.white.opacity(0.4))
                     }
                     .glassRow()

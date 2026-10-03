@@ -5,6 +5,9 @@
 // Gerekli ayarlar (Cloudflare → Worker → Settings → Variables and Secrets):
 //   OPENAI_API_KEY  (Secret)  OpenAI anahtarınız
 //   APP_TOKEN       (Secret)  Uygulamanın Ayarlar ekranına yazacağınız uzun bir şifre
+//   TTS_MODEL       (Text, isteğe bağlı)  Varsayılan: gpt-4o-mini-tts
+//   STT_MODEL       (Text, isteğe bağlı)  Varsayılan: gpt-4o-mini-transcribe
+//   JARVIS_KV       (KV namespace binding, isteğe bağlı)  Cihazlar arası eşitleme için
 //   OPENAI_MODEL    (Text, isteğe bağlı)  Varsayılan: gpt-5.6-luna
 
 const DEFAULT_MODEL = "gpt-5.6-luna";
@@ -22,7 +25,11 @@ const ACTION_TYPES = [
   "add_event",       // takvime etkinlik ekle (title, due, end, location)
   "get_route",       // rota ve trafik süresi (origin boşsa mevcut konum, destination)
   "remember",        // kalıcı hafızaya bilgi kaydet (note)
-  "forget"           // hafızadan sil (target_id)
+  "forget",          // hafızadan sil (target_id)
+  "add_special_day", // her yıl tekrar eden özel gün: doğum günü, yıl dönümü (title, person, due, note = tür)
+  "delete_special_day", // özel günü sil (target_id)
+  "add_moment",      // yaşanmış bir anıyı sakla (title, due = tarih, location, note)
+  "show_calendar"    // uygulamada takvimi aç (note: "week" | "year" | "moments")
 ];
 
 const nullableString = { type: ["string", "null"] };
@@ -102,7 +109,23 @@ PLANLAMA
 - Gün çok yoğunsa önceliklendir, ertelenebilecekleri söyle.
 
 HAFIZA
-- Kullanıcı kalıcı bir bilgi verirse ("annemin doğum günü 3 Mart", "markette hep X alırım", "stüdyo Kadıköy'de") remember ile kaydet. Hafızadaki bilgileri cevaplarında kullan.`;
+- Kullanıcı kalıcı bir bilgi verirse ("markette hep X alırım", "stüdyo Kadıköy'de") remember ile kaydet. Hafızadaki bilgileri cevaplarında kullan.
+
+ÖZEL GÜNLER (her yıl tekrar eder)
+- Doğum günü, evlilik/tanışma yıl dönümü, anma günü gibi kişisel özel günler → add_special_day. remember KULLANMA.
+  title: kısa ve anlaşılır ("Annemin doğum günü", "Evlilik yıl dönümü"), person: kişi varsa, note: "doğum günü" | "yıl dönümü" | "özel gün".
+  due: tarih YYYY-MM-DDT00:00. Doğum/başlangıç yılı biliniyorsa o yılı yaz (ör. 1962-03-03T00:00), bilinmiyorsa bu yılın tarihini yaz.
+- Uygulama bunları yıllık takvimde işaretler; 1 hafta önce ve o gün kendisi hatırlatır. Ayrıca add_task ekleme.
+- Bağlamdaki ÖZEL GÜNLER ve YAKLAŞAN BAYRAMLAR'ı planlarda dikkate al; yaklaşan bir doğum günü varsa uygun anda hediye/kutlama öner.
+
+ANILAR
+- Kullanıcı yaşadığı anlamlı bir olayı anlatırsa (sahneye çıktım, konser verdim, mezun oldum, ilk kez bir şey yaptım, önemli bir buluşma) → add_moment.
+  title: kısa başlık ("Harbiye'de konuk sanatçı olarak sahne"), due: olayın tarihi (geçmişte olabilir; "1 ekimde" → bu yılın 1 Ekim'i, saat bilinmiyorsa T20:00), location: yer, note: kullanıcının anlattığı ayrıntılar.
+- Cevabında bunu anı olarak sakladığını sıcak bir dille söyle. "Geçen yıl bugün ne yapmıştım?" gibi sorularda ANILAR listesini kullan.
+
+HAFTALIK PROGRAM
+- "Haftamı planla", "haftalık program yap" → takvim etkinliklerini, açık görevleri, özel günleri ve bayramları dikkate alarak makul sayıda zamanlı add_task ile programı kur (günde en fazla 3-4 iş), cevapta kısaca özetle ve show_calendar (note: "week") ekle.
+- "Haftamı/takvimimi göster", "bu hafta ne var" → show_calendar (note: "week") + kısa sesli özet. "Yılı göster" → note: "year". "Anılarımı göster" → note: "moments".`;
 }
 
 function buildContext(ctx) {
@@ -119,6 +142,9 @@ function buildContext(ctx) {
   list("ARANACAKLAR", ctx.calls, (c) => `[id:${c.id}] ${c.person}${c.reason ? " — " + c.reason : ""}`);
   list("TAKVİM (önümüzdeki günler)", ctx.events, (e) => `${e.start}${e.end ? "–" + e.end : ""} ${e.title}${e.location ? " @ " + e.location : ""}`);
   list("HAFIZA", ctx.memory, (m) => `[id:${m.id}] ${m.text}`);
+  list("ÖZEL GÜNLER (yıllık)", ctx.specials, (d) => `[id:${d.id}] ${d.title}${d.person ? " (" + d.person + ")" : ""} | ${d.kind} | sıradaki: ${d.next}${d.years ? " | " + d.years + ". yıl" : ""}`);
+  list("YAKLAŞAN BAYRAMLAR VE ÖNEMLİ GÜNLER", ctx.holidays, (h) => `${h.date} ${h.title}`);
+  list("ANILAR (son)", ctx.moments, (m) => `${m.date} ${m.title}${m.place ? " @ " + m.place : ""}${m.note ? " — " + m.note : ""}`);
   return lines.join("\n");
 }
 
@@ -217,6 +243,88 @@ async function handleChat(request, env) {
   return json(sanitize(parsed));
 }
 
+// --- Ses (metni doğal sese çevirir) ---
+const DEFAULT_TTS_MODEL = "gpt-4o-mini-tts";
+const TTS_VOICES = ["onyx", "ash", "echo", "alloy", "ballad", "coral", "sage", "shimmer", "verse", "nova", "fable"];
+const TTS_STYLE =
+  "Türkçe konuş. Sakin, kendinden emin, sıcak ve akıcı bir kişisel asistan gibi; " +
+  "kibar ama samimi, hafif esprili bir uşak tonu. Doğal vurgu ve tonlama kullan, " +
+  "cümleler arasında kısa ve doğal duraksamalar yap, robotik okuma yapma.";
+
+async function handleTTS(request, env) {
+  let body;
+  try { body = await request.json(); } catch { return json({ error: "Geçersiz istek." }, 400); }
+  const text = String(body?.text ?? "").trim().slice(0, 4000);
+  if (!text) return json({ error: "Metin boş." }, 400);
+  const voice = TTS_VOICES.includes(body?.voice) ? body.voice : "onyx";
+  const speed = Math.min(1.4, Math.max(0.8, Number(body?.speed) || 1.05));
+
+  const res = await fetch("https://api.openai.com/v1/audio/speech", {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${env.OPENAI_API_KEY}` },
+    body: JSON.stringify({
+      model: env.TTS_MODEL || DEFAULT_TTS_MODEL,
+      voice,
+      input: text,
+      instructions: TTS_STYLE,
+      speed,
+      response_format: "mp3"
+    })
+  });
+  if (!res.ok) {
+    return json({ error: `Ses hatası (${res.status})` }, 502);
+  }
+  return new Response(res.body, { headers: { "content-type": "audio/mpeg", "cache-control": "no-store" } });
+}
+
+// --- Konuşmayı yazıya çevirme (bilgisayar uygulaması için) ---
+async function handleSTT(request, env) {
+  const type = request.headers.get("content-type") || "audio/webm";
+  const audio = await request.arrayBuffer();
+  if (!audio.byteLength) return json({ error: "Ses boş." }, 400);
+  if (audio.byteLength > 20 * 1024 * 1024) return json({ error: "Ses çok uzun." }, 413);
+  const ext = type.includes("mp4") || type.includes("m4a") ? "m4a" : type.includes("wav") ? "wav" : type.includes("ogg") ? "ogg" : "webm";
+  const form = new FormData();
+  form.append("file", new Blob([audio], { type }), `ses.${ext}`);
+  form.append("model", env.STT_MODEL || "gpt-4o-mini-transcribe");
+  form.append("language", "tr");
+  const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+    method: "POST",
+    headers: { authorization: `Bearer ${env.OPENAI_API_KEY}` },
+    body: form
+  });
+  if (!res.ok) return json({ error: `Yazıya çevirme hatası (${res.status})` }, 502);
+  const data = await res.json();
+  return json({ text: String(data.text || "").trim() });
+}
+
+// --- Cihazlar arası eşitleme (telefon ↔ bilgisayar) ---
+// Tüm veri tek kayıt olarak saklanır; en son yazan kazanır (updatedAt).
+async function handleSync(request, env) {
+  if (!env.JARVIS_KV) {
+    return json({ error: "Eşitleme kapalı: Cloudflare'de JARVIS_KV bağlantısı eklenmemiş." }, 501);
+  }
+  if (request.method === "GET") {
+    const stored = await env.JARVIS_KV.get("data", "json");
+    return json(stored || { updatedAt: null, data: null });
+  }
+  if (request.method === "PUT") {
+    let body;
+    try { body = await request.json(); } catch { return json({ error: "Geçersiz veri." }, 400); }
+    if (!body || typeof body.updatedAt !== "string" || typeof body.data !== "object" || body.data === null) {
+      return json({ error: "updatedAt ve data gerekli." }, 400);
+    }
+    const stored = await env.JARVIS_KV.get("data", "json");
+    if (stored?.updatedAt && stored.updatedAt > body.updatedAt) {
+      // Sunucudaki daha yeni: istemci önce onu almalı
+      return json({ conflict: true, ...stored }, 409);
+    }
+    await env.JARVIS_KV.put("data", JSON.stringify({ updatedAt: body.updatedAt, data: body.data }));
+    return json({ ok: true, updatedAt: body.updatedAt });
+  }
+  return json({ error: "Desteklenmeyen yöntem." }, 405);
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -229,6 +337,15 @@ export default {
     if (!env.OPENAI_API_KEY) return json({ error: "Sunucuda OPENAI_API_KEY tanımlı değil." }, 500);
     if (request.method === "POST" && url.pathname === "/chat") {
       return handleChat(request, env);
+    }
+    if (request.method === "POST" && url.pathname === "/tts") {
+      return handleTTS(request, env);
+    }
+    if (request.method === "POST" && url.pathname === "/stt") {
+      return handleSTT(request, env);
+    }
+    if (url.pathname === "/sync") {
+      return handleSync(request, env);
     }
     return json({ error: "Bulunamadı." }, 404);
   }

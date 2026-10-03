@@ -14,7 +14,8 @@ final class Store: ObservableObject {
     @Published var specials: [SpecialDay] = [] { didSet { save() } }
     @Published var moments: [Moment] = [] { didSet { save() } }
 
-    private struct Snapshot: Codable {
+    /// Diskte ve eşitlemede kullanılan tek veri biçimi (bilgisayar uygulaması da aynısını kullanır)
+    struct Snapshot: Codable {
         var tasks: [TaskItem]
         var shopping: [ShoppingItem]
         var calls: [CallItem]
@@ -23,6 +24,74 @@ final class Store: ObservableObject {
         // Sonradan eklenenler: eski kayıtlarda yok → isteğe bağlı
         var specials: [SpecialDay]?
         var moments: [Moment]?
+        var updatedAt: Date?
+    }
+
+    /// Son yerel değişiklik zamanı (eşitlemede hangisi yeni, ona göre karar verilir)
+    private(set) var updatedAt: Date = .distantPast
+    private var applyingRemote = false
+
+    static func makeEncoder() -> JSONEncoder {
+        let e = JSONEncoder()
+        e.dateEncodingStrategy = .iso8601
+        return e
+    }
+
+    /// Hem "2026-10-03T10:00:00Z" hem "2026-10-03T10:00:00.123Z" biçimini okur
+    static func makeDecoder() -> JSONDecoder {
+        let d = JSONDecoder()
+        d.dateDecodingStrategy = .custom { decoder in
+            let c = try decoder.singleValueContainer()
+            let s = try c.decode(String.self)
+            let plain = ISO8601DateFormatter()
+            let frac = ISO8601DateFormatter()
+            frac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = plain.date(from: s) ?? frac.date(from: s) { return date }
+            throw DecodingError.dataCorruptedError(in: c, debugDescription: "Tarih okunamadı: \(s)")
+        }
+        return d
+    }
+
+    var snapshot: Snapshot {
+        Snapshot(tasks: tasks, shopping: shopping, calls: calls, memory: memory,
+                 messages: Array(messages.suffix(200)), specials: specials, moments: moments, updatedAt: updatedAt)
+    }
+
+    /// Eşitlemeden gelen daha yeni veriyi uygula (hatırlatmaları da günceller)
+    func applyRemote(_ snap: Snapshot, updatedAt remoteDate: Date) {
+        applyingRemote = true
+        defer { applyingRemote = false }
+
+        let oldTasks = Dictionary(tasks.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let oldSpecials = Dictionary(specials.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+
+        // Bu cihaza ait alarm kimliklerini koru
+        tasks = snap.tasks.map { t in
+            var t = t
+            t.alarmID = oldTasks[t.id]?.alarmID
+            return t
+        }
+        shopping = snap.shopping
+        calls = snap.calls
+        memory = snap.memory
+        messages = snap.messages
+        specials = snap.specials ?? []
+        moments = snap.moments ?? []
+        updatedAt = remoteDate
+
+        // Yalnızca değişen hatırlatmaları yeniden kur
+        let newIDs = Set(tasks.map(\.id))
+        for (id, old) in oldTasks where !newIDs.contains(id) { Reminders.shared.cancel(old) }
+        for t in tasks {
+            let old = oldTasks[t.id]
+            if old == nil || old!.due != t.due || old!.priority != t.priority || old!.done != t.done || old!.title != t.title {
+                if t.done, let old { Reminders.shared.cancel(old) } else { Reminders.shared.schedule(t) }
+            }
+        }
+        let newSpecialIDs = Set(specials.map(\.id))
+        for (id, old) in oldSpecials where !newSpecialIDs.contains(id) { Reminders.shared.cancelSpecial(old) }
+        for d in specials where oldSpecials[d.id] != d { Reminders.shared.scheduleSpecial(d) }
+        writeToDisk()
     }
 
     private var loading = false
@@ -38,9 +107,7 @@ final class Store: ObservableObject {
         loading = true
         defer { loading = false }
         guard let data = try? Data(contentsOf: url) else { return }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        guard let snap = try? decoder.decode(Snapshot.self, from: data) else { return }
+        guard let snap = try? Self.makeDecoder().decode(Snapshot.self, from: data) else { return }
         tasks = snap.tasks
         shopping = snap.shopping
         calls = snap.calls
@@ -48,15 +115,18 @@ final class Store: ObservableObject {
         messages = snap.messages
         specials = snap.specials ?? []
         moments = snap.moments ?? []
+        updatedAt = snap.updatedAt ?? .distantPast
     }
 
     private func save() {
-        guard !loading else { return }
-        let snap = Snapshot(tasks: tasks, shopping: shopping, calls: calls, memory: memory,
-                            messages: Array(messages.suffix(200)), specials: specials, moments: moments)
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        if let data = try? encoder.encode(snap) {
+        guard !loading, !applyingRemote else { return }
+        updatedAt = Date()
+        writeToDisk()
+        SyncService.shared.schedulePush()
+    }
+
+    private func writeToDisk() {
+        if let data = try? Self.makeEncoder().encode(snapshot) {
             try? data.write(to: url, options: [.atomic, .completeFileProtection])
         }
     }
@@ -193,6 +263,8 @@ final class AppSettings: ObservableObject {
     @Published var token: String { didSet { Keychain.set(token, for: "appToken") } }
     /// Uygulama her açıldığında (Siri, ikon, Arkaya Dokunma) kendiliğinden dinlemeye başla
     @Published var autoListen: Bool { didSet { UserDefaults.standard.set(autoListen, forKey: "autoListen") } }
+    /// Bilgisayar uygulamasıyla ortak veri (sunucuda JARVIS_KV gerekir)
+    @Published var syncEnabled: Bool { didSet { UserDefaults.standard.set(syncEnabled, forKey: "syncEnabled") } }
     /// Doğal (yapay zekâ) ses; kapalıysa iPhone'un kendi sesi
     /// Normal önemdeki hatırlatmalar da alarm gibi çalsın (düşük önem sessiz kalır)
     @Published var alarmAll: Bool { didSet { UserDefaults.standard.set(alarmAll, forKey: "alarmAll") } }
@@ -219,6 +291,7 @@ final class AppSettings: ObservableObject {
         speakReplies = d.object(forKey: "speakReplies") as? Bool ?? true
         autoListen = d.object(forKey: "autoListen") as? Bool ?? true
         alarmAll = d.object(forKey: "alarmAll") as? Bool ?? true
+        syncEnabled = d.bool(forKey: "syncEnabled")
         naturalVoice = d.object(forKey: "naturalVoice") as? Bool ?? true
         voiceFemale = d.object(forKey: "voiceFemale") as? Bool ?? false
         voiceTone = d.object(forKey: "voiceTone") as? Double ?? 0

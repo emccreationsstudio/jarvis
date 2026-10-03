@@ -107,4 +107,95 @@ await test("şema strict kurallarına uygun (her alan zorunlu, ek alan yok)", as
   check(lastPayload.text.format.schema, "root");
 });
 
+await test("ses: /tts OpenAI'den mp3 döndürüyor, ses ve hız sınırlanıyor", async () => {
+  const saved = globalThis.fetch;
+  let sent = null;
+  globalThis.fetch = async (url, init) => {
+    assert.equal(url, "https://api.openai.com/v1/audio/speech");
+    sent = JSON.parse(init.body);
+    return new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { "content-type": "audio/mpeg" } });
+  };
+  const r = await worker.fetch(req("/tts", { text: "Merhaba efendim", voice: "kotu-ses", speed: 9 }), env);
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get("content-type"), "audio/mpeg");
+  assert.equal((await r.arrayBuffer()).byteLength, 3);
+  assert.equal(sent.voice, "onyx");
+  assert.equal(sent.speed, 1.4);
+  assert.equal(sent.model, "gpt-4o-mini-tts");
+  assert.ok(sent.instructions.includes("Türkçe"));
+  assert.equal((await worker.fetch(req("/tts", { text: "x" }, "yanlis"), env)).status, 401);
+  assert.equal((await worker.fetch(req("/tts", { text: "  " }), env)).status, 400);
+  globalThis.fetch = saved;
+});
+
+await test("özel gün, anı ve takvim işlemleri kabul ediliyor, bağlama ekleniyor", async () => {
+  fakeReply = {
+    reply: "Annenin doğum gününü ve Harbiye anını kaydettim.",
+    actions: [
+      { type: "add_special_day", title: "Annemin doğum günü", items: [], due: "1962-03-03T00:00", end: null, priority: null, person: "Annem", origin: null, destination: null, location: null, note: "doğum günü", target_id: null },
+      { type: "add_moment", title: "Harbiye'de konuk sanatçı", items: [], due: "2026-10-01T20:00", end: null, priority: null, person: null, origin: null, destination: null, location: "Harbiye Açıkhava", note: "Konuk sanatçı olarak sahneye çıktım", target_id: null },
+      { type: "show_calendar", title: null, items: [], due: null, end: null, priority: null, person: null, origin: null, destination: null, location: null, note: "week", target_id: null }
+    ]
+  };
+  const body = await (await worker.fetch(req("/chat", {
+    message: "annemin doğum günü 3 mart",
+    context: {
+      specials: [{ id: "s1", title: "Babamın doğum günü", kind: "birthday", next: "2027-01-05", years: 70 }],
+      holidays: [{ date: "2026-10-29", title: "Cumhuriyet Bayramı" }],
+      moments: [{ date: "2026-10-01", title: "Harbiye", place: "Harbiye", note: null }]
+    }
+  }), env)).json();
+  assert.deepEqual(body.actions.map((a) => a.type), ["add_special_day", "add_moment", "show_calendar"]);
+  const last = lastPayload.input.at(-1).content;
+  assert.ok(last.includes("Babamın doğum günü") && last.includes("70. yıl"));
+  assert.ok(last.includes("Cumhuriyet Bayramı"));
+  assert.ok(last.includes("ANILAR"));
+  assert.ok(lastPayload.instructions.includes("add_moment"));
+});
+
+await test("stt: sesi OpenAI'ye gönderip yazıyı döndürüyor", async () => {
+  const saved = globalThis.fetch;
+  let form = null;
+  globalThis.fetch = async (url, init) => {
+    assert.equal(url, "https://api.openai.com/v1/audio/transcriptions");
+    form = init.body;
+    return new Response(JSON.stringify({ text: " Domates ekle. " }), { status: 200 });
+  };
+  const r = await worker.fetch(new Request("https://jarvis.example/stt", {
+    method: "POST", headers: { authorization: "Bearer gizli123", "content-type": "audio/webm" }, body: new Uint8Array([1, 2, 3, 4])
+  }), env);
+  assert.equal(r.status, 200);
+  assert.equal((await r.json()).text, "Domates ekle.");
+  assert.equal(form.get("language"), "tr");
+  assert.equal(form.get("model"), "gpt-4o-mini-transcribe");
+  assert.equal(form.get("file").name, "ses.webm");
+  globalThis.fetch = saved;
+});
+
+await test("sync: KV yoksa 501, varsa yaz/oku, eski veri 409", async () => {
+  assert.equal((await worker.fetch(req("/sync", null, "gizli123", "GET"), env)).status, 501);
+  const mem = new Map();
+  const kv = {
+    get: async (k, t) => (mem.has(k) ? (t === "json" ? JSON.parse(mem.get(k)) : mem.get(k)) : null),
+    put: async (k, v) => { mem.set(k, v); }
+  };
+  const e2 = { ...env, JARVIS_KV: kv };
+  const empty = await (await worker.fetch(req("/sync", null, "gizli123", "GET"), e2)).json();
+  assert.equal(empty.updatedAt, null);
+  const put = await worker.fetch(new Request("https://jarvis.example/sync", {
+    method: "PUT", headers: { authorization: "Bearer gizli123", "content-type": "application/json" },
+    body: JSON.stringify({ updatedAt: "2026-10-03T10:00:00Z", data: { tasks: [{ id: "a", title: "Su iç" }] } })
+  }), e2);
+  assert.equal(put.status, 200);
+  const got = await (await worker.fetch(req("/sync", null, "gizli123", "GET"), e2)).json();
+  assert.equal(got.data.tasks[0].title, "Su iç");
+  const old = await worker.fetch(new Request("https://jarvis.example/sync", {
+    method: "PUT", headers: { authorization: "Bearer gizli123", "content-type": "application/json" },
+    body: JSON.stringify({ updatedAt: "2026-10-03T09:00:00Z", data: { tasks: [] } })
+  }), e2);
+  assert.equal(old.status, 409);
+  assert.equal((await old.json()).data.tasks.length, 1);
+  assert.equal((await worker.fetch(req("/sync", null, "yanlis", "GET"), e2)).status, 401);
+});
+
 console.log(`\n${n} test geçti`);

@@ -81,6 +81,7 @@ final class Assistant: ObservableObject {
 
     /// Uygulama ön plana geldi (Siri, ikon, Arkaya Dokunma…)
     func appBecameActive() {
+        Task { await SyncService.shared.pull() }   // eşitleme açıksa bilgisayardaki değişiklikleri al
         sessionStart = Date()
         lastRoute = nil
         errorText = nil
