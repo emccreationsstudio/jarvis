@@ -1,0 +1,82 @@
+# Jarvis masaüstü: Windows (.exe) ve Mac (.dmg) kurulum dosyalarını GitHub kendisi derler.
+# Çalıştırmak: GitHub → Actions → "Jarvis Masaüstü" → Run workflow
+# Ayrıca desktop/ klasöründe değişiklik yüklenince kendiliğinden çalışır.
+name: Jarvis Masaüstü
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "desktop/**"
+      - ".github/workflows/desktop.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Sesli komut testleri
+        working-directory: desktop
+        run: node test/commands.test.mjs
+
+  windows:
+    needs: test
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Paketleri kur
+        run: npm install --no-audit --no-fund
+      - name: Windows kurulum dosyasını oluştur
+        run: npx electron-builder --win --publish never
+      - name: Kurulum dosyasını yükle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Jarvis-Windows
+          path: desktop/dist/*.exe
+          if-no-files-found: error
+
+  mac:
+    needs: test
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Paketleri kur
+        run: npm install --no-audit --no-fund
+      - name: Mac uygulamasını oluştur (Intel + Apple Silicon)
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npx electron-builder --mac dir --universal --publish never
+      - name: Yerel imza (Apple Silicon'da açılabilmesi için)
+        run: |
+          APP="$(ls -d dist/mac*/Jarvis.app | head -n1)"
+          echo "Uygulama: $APP"
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --verbose "$APP"
+      - name: DMG oluştur
+        run: |
+          APP="$(ls -d dist/mac*/Jarvis.app | head -n1)"
+          mkdir -p dmg
+          cp -R "$APP" dmg/
+          ln -s /Applications dmg/Applications
+          hdiutil create -volname "Jarvis" -srcfolder dmg -ov -format UDZO dist/Jarvis-Mac.dmg
+      - name: DMG dosyasını yükle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Jarvis-Mac
+          path: desktop/dist/Jarvis-Mac.dmg
+          if-no-files-found: error
