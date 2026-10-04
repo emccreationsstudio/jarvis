@@ -68,6 +68,8 @@ private struct WeekPage: View {
     var askJarvis: (String) -> Void
     @State private var offset = 0
     @State private var events: [CalendarService.Event] = []
+    @State private var editingEvent: CalendarService.Event?
+    @State private var editingTask: TaskItem?
 
     private var weekStart: Date {
         let base = trCal.dateInterval(of: .weekOfYear, for: Date())?.start ?? trCal.startOfDay(for: Date())
@@ -103,8 +105,12 @@ private struct WeekPage: View {
                 .buttonStyle(HUDButtonStyle())
 
                 ForEach(days, id: \.self) { day in
-                    DayCard(day: day, events: events.filter { trCal.isDate($0.start, inSameDayAs: day) })
+                    DayCard(day: day, events: events.filter { trCal.isDate($0.start, inSameDayAs: day) },
+                            onEvent: { editingEvent = $0 }, onTask: { editingTask = $0 })
                 }
+                Text("Etkinliğe ya da göreve dokun: düzenle, ertele, sil. Jarvis'e \"yarınki toplantıyı 3'e al\" da diyebilirsin.")
+                    .font(.caption2).foregroundStyle(.white.opacity(0.4))
+                    .multilineTextAlignment(.center)
                 if !CalendarService.shared.hasAccess {
                     Text("Telefon takvimindeki etkinlikleri de görmek için Ayarlar → İzinler'den takvim iznini ver.")
                         .font(.caption).foregroundStyle(.white.opacity(0.5))
@@ -117,6 +123,8 @@ private struct WeekPage: View {
         .scrollIndicators(.hidden)
         .onAppear(perform: load)
         .onChange(of: offset) { _, _ in load() }
+        .sheet(item: $editingEvent, onDismiss: load) { e in EventEditor(event: e) }
+        .sheet(item: $editingTask) { t in TaskEditor(task: t) }
     }
 
     private var rangeText: String {
@@ -135,6 +143,8 @@ private struct DayCard: View {
     @EnvironmentObject var store: Store
     let day: Date
     let events: [CalendarService.Event]
+    var onEvent: (CalendarService.Event) -> Void = { _ in }
+    var onTask: (TaskItem) -> Void = { _ in }
 
     var body: some View {
         let holidays = Holiday.between(day, day)
@@ -172,6 +182,8 @@ private struct DayCard: View {
             ForEach(Array(events.enumerated()), id: \.offset) { _, e in
                 AgendaRow(time: e.end == nil ? "Tüm gün" : e.start.formatted(.dateTime.hour().minute().locale(trLocale)),
                           title: e.title, detail: e.location, color: Theme.glow, icon: "calendar")
+                    .contentShape(Rectangle())
+                    .onTapGesture { if e.id != nil { onEvent(e) } }
             }
             ForEach(tasks) { t in
                 AgendaRow(time: t.due.map { $0.formatted(.dateTime.hour().minute().locale(trLocale)) } ?? "",
@@ -179,6 +191,8 @@ private struct DayCard: View {
                           color: Theme.color(for: t.priority),
                           icon: t.done ? "checkmark.circle.fill" : (t.priority == .critical ? "alarm.fill" : "circle"))
                     .opacity(t.done ? 0.5 : 1)
+                    .contentShape(Rectangle())
+                    .onTapGesture { onTask(t) }
             }
             ForEach(moments) { m in
                 Chip(icon: "sparkles", color: .cyan, text: "Anı: " + m.title)
@@ -548,6 +562,132 @@ private struct MomentCard: View {
         }
         .padding(12)
         .background(GlassRow(radius: 14).padding(.vertical, -3))
+    }
+}
+
+// MARK: - Etkinlik düzenleme
+
+/// Telefon takvimindeki etkinliği düzenle / ertele / sil
+private struct EventEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    let event: CalendarService.Event
+    @State private var title: String
+    @State private var start: Date
+    @State private var end: Date
+    @State private var location: String
+    @State private var saving = false
+    @State private var confirmDelete = false
+    @State private var errorText: String?
+
+    init(event: CalendarService.Event) {
+        self.event = event
+        _title = State(initialValue: event.title)
+        _start = State(initialValue: event.start)
+        _end = State(initialValue: event.end ?? event.start.addingTimeInterval(3600))
+        _location = State(initialValue: event.location ?? "")
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Başlık", text: $title)
+                    TextField("Yer", text: $location)
+                    DatePicker("Başlangıç", selection: $start)
+                        .environment(\.locale, trLocale)
+                        .onChange(of: start) { old, new in
+                            // Süreyi koru
+                            end = end.addingTimeInterval(new.timeIntervalSince(old))
+                        }
+                    if !event.allDay {
+                        DatePicker("Bitiş", selection: $end, in: start...)
+                            .environment(\.locale, trLocale)
+                    }
+                } footer: {
+                    if let cal = event.calendarTitle {
+                        Text("Takvim: \(cal)").font(.caption2).foregroundStyle(.white.opacity(0.45))
+                    }
+                }
+                .glassRow()
+                .disabled(!event.editable)
+
+                if event.editable {
+                    Section {
+                        HStack(spacing: 8) {
+                            shift("+1 saat", 3600)
+                            shift("Yarın", 86400)
+                            shift("+1 hafta", 7 * 86400)
+                        }
+                    } header: {
+                        HUDHeader(text: "Ertele")
+                    }
+                    .glassRow()
+
+                    Section {
+                        Button(role: .destructive) { confirmDelete = true } label: {
+                            Label("Etkinliği sil", systemImage: "trash")
+                        }
+                    }
+                    .glassRow()
+                } else {
+                    Section {
+                        Text("Bu takvim salt okunur (ör. abone olunan ya da paylaşılan takvim). Değiştirmek için takvimin sahibi olmalısın.")
+                            .font(.footnote).foregroundStyle(.white.opacity(0.6))
+                    }
+                    .glassRow()
+                }
+                if let errorText {
+                    Text(errorText).font(.footnote).foregroundStyle(.orange)
+                        .listRowBackground(Color.clear)
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(Theme.background)
+            .navigationTitle("Etkinlik")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Vazgeç") { dismiss() } }
+                if event.editable {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Kaydet") { save() }
+                            .bold()
+                            .disabled(saving || title.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                }
+            }
+            .confirmationDialog("“\(event.title)” silinsin mi?", isPresented: $confirmDelete, titleVisibility: .visible) {
+                Button("Etkinliği sil", role: .destructive) {
+                    Task {
+                        guard let id = event.id else { return }
+                        if await CalendarService.shared.delete(id: id) { dismiss() } else { errorText = "Silinemedi. Takvim iznini kontrol et." }
+                    }
+                }
+            } message: {
+                Text("Telefon takviminden silinir.")
+            }
+        }
+        .presentationBackground(.clear)
+    }
+
+    private func shift(_ label: String, _ seconds: TimeInterval) -> some View {
+        Button(label) {
+            start = start.addingTimeInterval(seconds)
+        }
+        .buttonStyle(.borderless)
+        .font(.caption.weight(.semibold))
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(Capsule().fill(Theme.accent.opacity(0.2)))
+    }
+
+    private func save() {
+        guard let id = event.id else { return }
+        saving = true
+        Task {
+            let ok = await CalendarService.shared.update(id: id, title: title, start: start,
+                                                          end: event.allDay ? nil : end, location: location)
+            saving = false
+            if ok { dismiss() } else { errorText = "Kaydedilemedi. Takvim iznini kontrol et." }
+        }
     }
 }
 

@@ -52,8 +52,8 @@ struct MemoryView: View {
                         }
                         .onDelete { offsets in
                             let reversed = Array(store.memory.reversed())
-                            let ids = Set(offsets.map { reversed[$0].id })
-                            store.memory.removeAll { ids.contains($0.id) }
+                            // Silinen hafıza kaydı 30 gün çöp kutusunda kalır (Listeler → çöp simgesi)
+                            offsets.map { reversed[$0].id }.forEach { store.trashMemory(id: $0) }
                         }
                     } header: {
                         if !store.memory.isEmpty { HUDHeader(text: "Bildikleri") }
@@ -179,6 +179,13 @@ struct SettingsView: View {
                             }
                         }
                         Toggle("Cevapları sesli oku", isOn: $settings.speakReplies)
+                        Toggle(isOn: $settings.cloudRecognition) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Gelişmiş konuşma tanıma")
+                                Text("Apple sunucusunda tanır; Türkçede daha doğru. İnternet yoksa telefonda tanır.")
+                                    .font(.caption2).foregroundStyle(.white.opacity(0.5))
+                            }
+                        }
                         Button {
                             assistant.speech.speak("Merhaba \(settings.userName), ben \(settings.assistantName). Bugün senin için ne yapabilirim?")
                         } label: {
@@ -215,6 +222,81 @@ struct SettingsView: View {
                     } footer: {
                         Text("Alarm: sessiz modda bile çalar ve titreşir, kilit ekranında büyük gösterilir. Kapalıysa yalnızca önemli ve kritik işler alarm olur; düşük önemliler her zaman sessiz bildirimdir.")
                             .font(.caption2).foregroundStyle(.white.opacity(0.4))
+                    }
+                    .glassRow()
+
+                    Section {
+                        Toggle("Sabah özeti", isOn: $settings.morningBrief)
+                        if settings.morningBrief {
+                            DatePicker("Saat", selection: Binding(
+                                get: {
+                                    Calendar.current.date(bySettingHour: settings.morningBriefMinutes / 60,
+                                                          minute: settings.morningBriefMinutes % 60, second: 0, of: Date()) ?? Date()
+                                },
+                                set: { d in
+                                    let c = Calendar.current.dateComponents([.hour, .minute], from: d)
+                                    settings.morningBriefMinutes = (c.hour ?? 8) * 60 + (c.minute ?? 0)
+                                }
+                            ), displayedComponents: .hourAndMinute)
+                            .environment(\.locale, Locale(identifier: "tr_TR"))
+                        }
+                        Button {
+                            assistant.send(Assistant.briefPrompt, voice: true)
+                        } label: {
+                            Label("Şimdi dinle", systemImage: "sunrise.fill")
+                        }
+                        .buttonStyle(HUDButtonStyle(prominent: false))
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
+                    } header: {
+                        HUDHeader(text: "Sabah özeti")
+                    } footer: {
+                        Text("Her sabah bildirim gelir; dokununca Jarvis hava durumunu (takvimine göre şemsiye, mont, trafik önerisiyle), bugünkü planını ve Türkiye ile dünyadan önemli haberleri okur. \"Günaydın\" ya da \"haberler ne\" demen de yeterli.")
+                            .font(.caption2).foregroundStyle(.white.opacity(0.4))
+                    }
+                    .glassRow()
+
+                    Section {
+                        Picker("Yol tarifi", selection: $settings.mapsApp) {
+                            Text("Apple Haritalar").tag("apple")
+                            Text("Google Haritalar").tag("google")
+                            Text("Yandex Navigasyon").tag("yandex")
+                        }
+                    } header: {
+                        HUDHeader(text: "Harita")
+                    } footer: {
+                        Text("\"Kadıköy'e yol tarifi başlat\" dediğinde doğrudan bu uygulama açılır. Yüklü değilse Apple Haritalar açılır.")
+                            .font(.caption2).foregroundStyle(.white.opacity(0.4))
+                    }
+                    .glassRow()
+
+                    Section {
+                        Label {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Arayanı sesli duyur")
+                                Text("iPhone bunu yalnızca kendisi yapabilir: Ayarlar → Uygulamalar → Telefon → Aramaları Seslendir → Her Zaman.")
+                                    .font(.caption2).foregroundStyle(.white.opacity(0.5))
+                            }
+                        } icon: { Image(systemName: "person.wave.2.fill") }
+                        Label {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Meşgulken otomatik cevap")
+                                Text("Gelen aramaya iPhone'un \"Mesajla Yanıtla\" özelliğiyle cevap verebilirsin (Ayarlar → Uygulamalar → Telefon → Mesajla Yanıtla). Jarvis'e \"Ahmet'e toplantıdayım, sonra arayacağım yaz\" dersen mesajı hazırlar, sen gönder'e basarsın.")
+                                    .font(.caption2).foregroundStyle(.white.opacity(0.5))
+                            }
+                        } icon: { Image(systemName: "message.fill") }
+                        Label {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Acil arama")
+                                Text("\"Jarvis 112'yi ara\" ya da \"annemi ara\" demen yeterli. iPhone aramadan önce onay sorar.")
+                                    .font(.caption2).foregroundStyle(.white.opacity(0.5))
+                            }
+                        } icon: { Image(systemName: "phone.badge.waveform.fill").foregroundStyle(.red) }
+                        Button {
+                            if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                        } label: { Label("iPhone Ayarlarını aç", systemImage: "gearshape") }
+                    } header: {
+                        HUDHeader(text: "Aramalar")
                     }
                     .glassRow()
 
@@ -271,6 +353,7 @@ struct SettingsView: View {
                         Label("\"Hey Siri, Jarvis\" deyin: açılır, \"Efendim?\" der ve dinler.", systemImage: "mic.circle")
                         Label("Sol alttaki Jarvis düğmesi ya da reaktör: dinlemeyi yeniden açar.", systemImage: "hand.tap")
                         Label("Arkaya Dokunma: Ayarlar → Erişilebilirlik → Dokunma → Arkaya Dokunma → Çift Dokunma → Jarvis.", systemImage: "iphone.gen3")
+                        Label("Silinenler 30 gün çöp kutusunda kalır: Listeler sekmesi → sağ üstteki çöp simgesi.", systemImage: "trash")
                     } header: {
                         HUDHeader(text: "Hızlı erişim")
                     }
