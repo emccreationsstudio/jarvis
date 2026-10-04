@@ -1,6 +1,7 @@
 import Foundation
 import MapKit
 import CoreLocation
+import UIKit
 
 /// Canlı trafiğe göre araçla yol süresi (Apple Haritalar).
 @MainActor
@@ -27,6 +28,27 @@ final class RouteService: NSObject, CLLocationManagerDelegate {
             location.requestWhenInUseAuthorization()
         }
     }
+
+    // MARK: Yaklaşık konum (hava durumu için)
+
+    /// Son bilinen konum (izin yoksa nil)
+    func approximateCoordinate() -> (lat: Double, lon: Double)? {
+        guard hasLocation, let loc = location.location else { return nil }
+        // Hava durumu için kabaca yeterli: ~1 km'ye yuvarla
+        let lat = (loc.coordinate.latitude * 100).rounded() / 100
+        let lon = (loc.coordinate.longitude * 100).rounded() / 100
+        return (lat, lon)
+    }
+
+    /// Uygulama açılınca konumu bir kez tazele
+    func refreshLocation() {
+        guard hasLocation else { return }
+        location.desiredAccuracy = kCLLocationAccuracyKilometer
+        location.requestLocation()
+    }
+
+    nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {}
+    nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {}
 
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         Task { @MainActor in
@@ -91,11 +113,45 @@ final class RouteService: NSObject, CLLocationManagerDelegate {
     }
 
     func openInMaps(_ result: Result) {
+        Task { await open(destination: result.destination, origin: result.origin) }
+    }
+
+    /// "Haritayı aç", "yol tarifi başlat" → seçilen harita uygulamasında doğrudan yol tarifi
+    func openDirections(to destination: String, from origin: String?) async -> Bool {
+        await requestPermission()
+        guard let dest = await search(destination) else { return false }
+        var originItem: MKMapItem? = nil
+        if let origin, !origin.isEmpty { originItem = await search(origin) }
+        await open(destination: dest, origin: originItem)
+        return true
+    }
+
+    private func open(destination: MKMapItem, origin: MKMapItem?) async {
+        let c = destination.placemark.coordinate
+        let app = AppSettings.shared.mapsApp
+        var url: URL?
+        switch app {
+        case "google":
+            var s = "comgooglemaps://?daddr=\(c.latitude),\(c.longitude)&directionsmode=driving"
+            if let o = origin?.placemark.coordinate { s += "&saddr=\(o.latitude),\(o.longitude)" }
+            url = URL(string: s)
+        case "yandex":
+            var s = "yandexnavi://build_route_on_map?lat_to=\(c.latitude)&lon_to=\(c.longitude)"
+            if let o = origin?.placemark.coordinate { s += "&lat_from=\(o.latitude)&lon_from=\(o.longitude)" }
+            url = URL(string: s)
+        default:
+            url = nil
+        }
+        if let url, UIApplication.shared.canOpenURL(url) {
+            await UIApplication.shared.open(url)
+            return
+        }
+        // Apple Haritalar (seçilen uygulama yüklü değilse de)
         let opts = [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDriving]
-        if let origin = result.origin {
-            MKMapItem.openMaps(with: [origin, result.destination], launchOptions: opts)
+        if let origin {
+            MKMapItem.openMaps(with: [origin, destination], launchOptions: opts)
         } else {
-            result.destination.openInMaps(launchOptions: opts)
+            destination.openInMaps(launchOptions: opts)
         }
     }
 

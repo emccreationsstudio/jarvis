@@ -17,11 +17,16 @@ final class CalendarService {
         return (try? await store.requestFullAccessToEvents()) ?? false
     }
 
-    struct Event {
+    struct Event: Identifiable {
+        /// Takvimdeki kimliği (düzenleme / silme için)
+        let id: String?
         let start: Date
         let end: Date?
         let title: String
         let location: String?
+        var allDay: Bool = false
+        var calendarTitle: String? = nil
+        var editable: Bool = false
     }
 
     func upcoming(days: Int = 3) -> [Event] {
@@ -32,7 +37,7 @@ final class CalendarService {
         return store.events(matching: predicate)
             .sorted { $0.startDate < $1.startDate }
             .prefix(40)
-            .map { Event(start: $0.startDate, end: $0.isAllDay ? nil : $0.endDate, title: $0.title ?? "Etkinlik", location: $0.location) }
+            .map(Self.make)
     }
 
     /// Belirli aralıktaki etkinlikler (haftalık / yıllık görünüm için)
@@ -41,7 +46,51 @@ final class CalendarService {
         let predicate = store.predicateForEvents(withStart: start, end: end, calendars: nil)
         return store.events(matching: predicate)
             .sorted { $0.startDate < $1.startDate }
-            .map { Event(start: $0.startDate, end: $0.isAllDay ? nil : $0.endDate, title: $0.title ?? "Etkinlik", location: $0.location) }
+            .map(Self.make)
+    }
+
+    private static func make(_ e: EKEvent) -> Event {
+        Event(id: e.eventIdentifier, start: e.startDate, end: e.isAllDay ? nil : e.endDate,
+              title: e.title ?? "Etkinlik", location: e.location,
+              allDay: e.isAllDay, calendarTitle: e.calendar?.title,
+              editable: e.calendar?.allowsContentModifications ?? false)
+    }
+
+    func event(id: String) -> Event? {
+        guard hasAccess, let e = store.event(withIdentifier: id) else { return nil }
+        return Self.make(e)
+    }
+
+    /// Etkinliği değiştirir (başlık, zaman, yer). Sadece başlangıç verilirse süresi korunur → erteleme.
+    func update(id: String, title: String?, start: Date?, end: Date?, location: String?) async -> Bool {
+        guard await requestAccess(), let e = store.event(withIdentifier: id),
+              e.calendar?.allowsContentModifications ?? false else { return false }
+        if let title, !title.trimmingCharacters(in: .whitespaces).isEmpty { e.title = title }
+        if let start {
+            let duration = e.endDate.timeIntervalSince(e.startDate)
+            e.startDate = start
+            e.endDate = end ?? start.addingTimeInterval(max(duration, 15 * 60))
+        } else if let end {
+            e.endDate = end
+        }
+        if let location { e.location = location.isEmpty ? nil : location }
+        do {
+            try store.save(e, span: .thisEvent)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    func delete(id: String) async -> Bool {
+        guard await requestAccess(), let e = store.event(withIdentifier: id),
+              e.calendar?.allowsContentModifications ?? false else { return false }
+        do {
+            try store.remove(e, span: .thisEvent)
+            return true
+        } catch {
+            return false
+        }
     }
 
     /// Takvime etkinlik ekler; başarılıysa true.

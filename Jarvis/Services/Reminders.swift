@@ -93,6 +93,28 @@ final class Reminders {
         center.add(UNNotificationRequest(identifier: id, content: content, trigger: trigger))
     }
 
+    // MARK: - Sabah özeti
+
+    static let briefID = "jarvis-morning-brief"
+    static let briefCategory = "JARVIS_BRIEF"
+
+    /// Her gün seçilen saatte "Günaydın" bildirimi; dokununca Jarvis hava, takvim ve haberleri okur
+    func scheduleMorningBrief() {
+        center.removePendingNotificationRequests(withIdentifiers: [Self.briefID])
+        let s = AppSettings.shared
+        guard s.morningBrief else { return }
+        Task { _ = await requestPermission() }
+        let content = UNMutableNotificationContent()
+        content.title = "Günaydın \(s.userName)"
+        content.body = "Sabah özetin hazır: hava, takvim ve haberler. Dinlemek için dokun."
+        content.sound = .default
+        content.categoryIdentifier = Self.briefCategory
+        content.userInfo = ["brief": true]
+        let comps = DateComponents(hour: s.morningBriefMinutes / 60, minute: s.morningBriefMinutes % 60)
+        let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: true)
+        center.add(UNNotificationRequest(identifier: Self.briefID, content: content, trigger: trigger))
+    }
+
     // MARK: - Özel günler ve bayramlar
 
     /// Her yıl tekrar eder: 1 hafta önce 10:00 ve o gün 09:00
@@ -231,6 +253,14 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+        if response.notification.request.content.userInfo["brief"] != nil {
+            // Uygulama açılırken özet okunacak
+            await MainActor.run {
+                Assistant.shared.briefRequested = true
+                if UIApplication.shared.applicationState == .active { Assistant.shared.appBecameActive() }
+            }
+            return
+        }
         guard let taskID = response.notification.request.content.userInfo["taskID"] as? String else { return }
         let action = response.actionIdentifier
         await MainActor.run {

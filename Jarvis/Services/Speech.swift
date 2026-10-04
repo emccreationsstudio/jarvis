@@ -27,6 +27,8 @@ final class SpeechService: NSObject, ObservableObject {
 
     /// Bu kadar sessizlik olunca söylenen bir "parça" sayılır
     var pauseInterval: TimeInterval = 1.3
+    /// Tanımayı kolaylaştıran özel sözcükler: Jarvis, kişi adları, liste ve ürün adları…
+    var vocabulary: [String] = []
 
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "tr-TR"))
     private let engine = AVAudioEngine()
@@ -121,7 +123,13 @@ final class SpeechService: NSObject, ObservableObject {
         let req = SFSpeechAudioBufferRecognitionRequest()
         req.shouldReportPartialResults = true
         req.addsPunctuation = true
-        if recognizer.supportsOnDeviceRecognition { req.requiresOnDeviceRecognition = true }
+        req.taskHint = .dictation
+        if !vocabulary.isEmpty { req.contextualStrings = Array(vocabulary.prefix(100)) }
+        // Apple'ın sunucudaki tanıması Türkçede cihazdakinden belirgin şekilde daha doğru.
+        // "Gelişmiş tanıma" kapalıysa (ya da internet yoksa) cihaz üzerinde tanınır.
+        if recognizer.supportsOnDeviceRecognition {
+            req.requiresOnDeviceRecognition = !AppSettings.shared.cloudRecognition || serverRecognitionFailures >= 2
+        }
         request = req
         sink.set(req)
         partialText = ""
@@ -136,8 +144,13 @@ final class SpeechService: NSObject, ObservableObject {
         }
     }
 
+    /// Sunucu tanıması üst üste başarısız olursa (internet yok) cihaz üzerine geç
+    private var serverRecognitionFailures = 0
+
     private func handle(gen: Int, text: String?, isFinal: Bool, failed: Bool) {
         guard gen == generation, isListening else { return }
+        if failed && (text ?? "").isEmpty { serverRecognitionFailures += 1 }
+        if let text, !text.isEmpty { serverRecognitionFailures = 0 }
         if let text, text != partialText {
             partialText = text
             if !text.isEmpty { schedulePause() }
