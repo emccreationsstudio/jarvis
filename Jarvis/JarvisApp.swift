@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         Task { @MainActor in
             Reminders.shared.registerCategories()
             Reminders.shared.scheduleHolidays()
+            Reminders.shared.scheduleMorningBrief()
         }
         return true
     }

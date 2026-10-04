@@ -7,7 +7,9 @@ enum VoiceCommand {
     private static let tr = Locale(identifier: "tr_TR")
 
     private static func norm(_ w: Substring) -> String {
-        String(w).lowercased(with: tr).trimmingCharacters(in: .punctuationCharacters.union(.symbols).union(.whitespaces))
+        let s = String(w).lowercased(with: tr).trimmingCharacters(in: .punctuationCharacters.union(.symbols).union(.whitespaces))
+        // "JARVIS" Türkçe küçültülünce "jarvıs" olur
+        return s.hasPrefix("jarvıs") ? "jarvis" + s.dropFirst(6) : s
     }
 
     /// Cümlenin sonundaki bitiş sözünü bulur ve ayıklar.
@@ -15,10 +17,13 @@ enum VoiceCommand {
         let words = text.split(whereSeparator: { $0.isWhitespace })
         let n = words.map(norm)
 
+        // Cümle sonunda her zaman kapatır
         let close: [[String]] = [
-            ["jarvis", "kapan"], ["kapan"], ["kapat"], ["kapanabilirsin"], ["jarvis", "kapat"],
-            ["görüşürüz"], ["jarvis", "görüşürüz"], ["sağ", "ol", "jarvis"], ["kapanış"]
+            ["jarvis", "kapan"], ["jarvis", "kapat"], ["kapanabilirsin"], ["jarvis", "kapanabilirsin"],
+            ["jarvis", "görüşürüz"], ["sağ", "ol", "jarvis"]
         ]
+        // Yalnızca tek başına söylenirse kapatır ("ışığı kapat", "alarmı kapat" Jarvis'i kapatmaz)
+        let closeAlone: [[String]] = [["kapan"], ["kapat"], ["görüşürüz"], ["kapanış"], ["kapanıyoruz"]]
         let done: [[String]] = [
             ["bitti"], ["jarvis", "bitti"], ["tamam", "bitti"], ["bu", "kadar"], ["hepsi", "bu"],
             ["şimdilik", "bu", "kadar"], ["işle"], ["hadi", "işle"]
@@ -34,6 +39,10 @@ enum VoiceCommand {
 
         if let k = match(close) {
             return (body(words.dropLast(k)), .close)
+        }
+        let spoken = n.filter { !$0.isEmpty }
+        if closeAlone.contains(spoken) {
+            return ("", .close)
         }
         if let k = match(done) {
             return (body(words.dropLast(k)), .done)

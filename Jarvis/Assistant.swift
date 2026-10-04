@@ -17,6 +17,9 @@ final class Assistant: ObservableObject {
     @Published var listenRequested = false
     /// Jarvis "takvimi göster" dediğinde açılacak sayfa
     @Published var calendarRequest: CalendarPage?
+    /// Sabah özeti bildirimine dokunuldu → açılınca özeti oku
+    @Published var briefRequested = false
+    static let briefPrompt = "Günaydın Jarvis, sabah özetimi ver: hava durumu, bugünkü takvimim ve görevlerim, Türkiye ve dünyadan önemli haberler."
 
     let speech = SpeechService()
     private let store = Store.shared
@@ -68,7 +71,7 @@ final class Assistant: ObservableObject {
             // Dokununca: yarım cümleyi de al, bekleyenleri işle ve kapan
             let partial = speech.partialText.trimmingCharacters(in: .whitespacesAndNewlines)
             speech.stopMic()
-            if !partial.isEmpty { pendingNotes.append(VoiceCommand.parse(partial).body) }
+            if !partial.isEmpty { pendingNotes.append(VoiceCommand.parse(NumberWords.normalize(partial)).body) }
             finish(close: true)
         }
     }
@@ -76,15 +79,26 @@ final class Assistant: ObservableObject {
     /// Siri / Kısayol / ekrandan
     func startListening() { if !conversing { startConversation(greet: true) } }
 
-    /// Ekranda gösterilen sohbetin başlangıcı — her açılışta ekran temiz başlar (geçmiş saklanır)
-    @Published private(set) var sessionStart = Date()
+    /// Ekranda gösterilen sohbetin başlangıcı: bugünün başı.
+    /// Gün içinde konuşulanlar ekranda kalır, her yeni günde sayfa temiz açılır (eski konuşmalar saklanır).
+    @Published private(set) var sessionStart = Calendar.current.startOfDay(for: Date())
 
     /// Uygulama ön plana geldi (Siri, ikon, Arkaya Dokunma…)
     func appBecameActive() {
         Task { await SyncService.shared.pull() }   // eşitleme açıksa bilgisayardaki değişiklikleri al
-        sessionStart = Date()
+        sessionStart = Calendar.current.startOfDay(for: Date())
+        store.housekeeping()                       // günlük listeleri sıfırla, eski çöpü at
+        RouteService.shared.refreshLocation()      // hava durumu için yaklaşık konum
         lastRoute = nil
         errorText = nil
+        if briefRequested {
+            briefRequested = false
+            listenRequested = false
+            guard UserDefaults.standard.bool(forKey: "didOnboard") else { return }
+            if conversing { endConversation() }
+            send(Self.briefPrompt, voice: true)
+            return
+        }
         let wanted = listenRequested || settings.autoListen
         listenRequested = false
         guard wanted, UserDefaults.standard.bool(forKey: "didOnboard"), !conversing, phase == .idle else { return }
@@ -161,6 +175,7 @@ final class Assistant: ObservableObject {
         guard conversing else { return }
         if speech.isListening { phase = .listening; return }
         phase = .listening
+        speech.vocabulary = vocabulary()
         let ok = speech.startMic { [weak self] segment in
             self?.handleSegment(segment)
         }
@@ -205,7 +220,8 @@ final class Assistant: ObservableObject {
     private func handleSegment(_ segment: String) {
         guard conversing else { return }
         armIdleTimer()
-        let parsed = VoiceCommand.parse(segment)
+        // Söylenen sayılar rakamla: "saat dörtte iki domates" → "saat 4'te 2 domates"
+        let parsed = VoiceCommand.parse(NumberWords.normalize(segment))
 
         // Düşünürken araya girildi → isteği iptal et, söyleneni geri al ve birleştir
         if let prev = inflightText, phase == .thinking {
@@ -262,17 +278,17 @@ final class Assistant: ObservableObject {
                 speech.stopMic()
                 conversing = false
                 phase = .speaking
-                speech.speak("Görüşmek üzere.") { [weak self] in self?.phase = .idle }
+                speech.speak("Kapanıyorum.") { [weak self] in self?.phase = .idle }
             }
             return
         }
         closeAfterReply = close
-        send(text)
+        send(text, voice: true)
     }
 
     // MARK: Gönder
 
-    func send(_ raw: String) {
+    func send(_ raw: String, voice: Bool = false) {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         errorText = nil
@@ -293,7 +309,7 @@ final class Assistant: ObservableObject {
         inflight = Task { [weak self] in
             guard let self else { return }
             do {
-                let response = try await self.request(text)
+                let response = try await self.request(text, voice: voice)
                 guard !Task.isCancelled else { return }
                 self.inflightText = nil
                 self.inflightMessageID = nil
@@ -318,7 +334,8 @@ final class Assistant: ObservableObject {
         if speak {
             if conversing { speech.stopMic() }   // Jarvis konuşurken kendini duymasın
             phase = .speaking
-            speech.speak(text) { [weak self] in self?.afterReply() }
+            // "Jarvis kapan" denmişse uzun cevap okunmaz; yalnızca "Kapanıyorum" der (cevap ekranda kalır)
+            speech.speak(closeAfterReply ? "Kapanıyorum." : text) { [weak self] in self?.afterReply() }
         } else {
             afterReply()
         }
@@ -342,12 +359,15 @@ final class Assistant: ObservableObject {
         var errorDescription: String? { message }
     }
 
-    private func request(_ text: String) async throws -> ChatResponse {
+    private func request(_ text: String, voice: Bool = false) async throws -> ChatResponse {
         let base = settings.serverURL.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let url = URL(string: base + "/chat") else { throw ServerError(message: "Sunucu adresi geçersiz.") }
 
-        let history = store.messages.dropLast().suffix(12).map { ChatRequest.HistoryItem(role: $0.role.rawValue, content: $0.text) }
-        let body = ChatRequest(message: text, history: Array(history), context: context())
+        // Yalnızca bugünün konuşması (her gün temiz sayfa; kalıcı bilgiler hafızada)
+        let today = Calendar.current.startOfDay(for: Date())
+        let history = store.messages.dropLast().filter { $0.date >= today }.suffix(12)
+            .map { ChatRequest.HistoryItem(role: $0.role.rawValue, content: $0.text) }
+        let body = ChatRequest(message: text, history: Array(history), context: context(), voice: voice)
 
         var req = URLRequest(url: url, timeoutInterval: 60)
         req.httpMethod = "POST"
@@ -377,17 +397,18 @@ final class Assistant: ObservableObject {
 
     private func context() -> ChatRequest.Context {
         let wire = DateText.wire
-        let events = CalendarService.shared.upcoming(days: 3).map {
-            ChatRequest.Context.E(start: wire.string(from: $0.start), end: $0.end.map { wire.string(from: $0) }, title: $0.title, location: $0.location)
+        let events = CalendarService.shared.upcoming(days: 7).map {
+            ChatRequest.Context.E(id: $0.id, start: wire.string(from: $0.start), end: $0.end.map { wire.string(from: $0) }, title: $0.title, location: $0.location)
         }
+        let loc = RouteService.shared.approximateCoordinate().map { ChatRequest.Context.Loc(lat: $0.lat, lon: $0.lon) }
         return ChatRequest.Context(
             now: DateText.now.string(from: Date()),
             timezone: TimeZone.current.identifier,
             userName: settings.userName,
             assistantName: settings.assistantName,
             tasks: store.openTasks.prefix(60).map { .init(id: $0.id, title: $0.title, due: $0.due.map { wire.string(from: $0) }, priority: $0.priority.rawValue) },
-            shopping: store.shopping.map { .init(id: $0.id, name: $0.name) },
-            calls: store.calls.map { .init(id: $0.id, person: $0.person, reason: $0.reason) },
+            shopping: store.openShopping.map { .init(id: $0.id, name: $0.name) },
+            calls: store.openCalls.map { .init(id: $0.id, person: $0.person, reason: $0.reason) },
             events: events,
             memory: store.memory.suffix(80).map { .init(id: $0.id, text: $0.text) },
             specials: store.specials.map { d in
@@ -400,8 +421,25 @@ final class Assistant: ObservableObject {
                 .map { ChatRequest.Context.H(date: DateText.dayKey($0.date), title: $0.title) },
             moments: store.moments.prefix(20).map {
                 ChatRequest.Context.MO(date: DateText.dayKey($0.date), title: $0.title, place: $0.place, note: $0.note)
-            }
+            },
+            lists: store.lists.map { l in
+                ChatRequest.Context.L(id: l.id, name: l.name, daily: l.daily,
+                                      items: l.items.filter { !$0.done }.map(\.text),
+                                      done: l.items.filter(\.done).map(\.text))
+            },
+            location: loc
         )
+    }
+
+    /// Konuşma tanımaya ipucu: sık geçen özel adlar
+    private func vocabulary() -> [String] {
+        var words = [settings.assistantName, "Jarvis", settings.userName, "Kapanıyorum", "Zoom", "Ses Açma"]
+        words += store.lists.map(\.name)
+        words += store.calls.map(\.person)
+        words += store.shopping.suffix(30).map(\.name)
+        words += store.lists.flatMap { $0.items.prefix(10).map(\.text) }
+        var seen = Set<String>()
+        return words.filter { !$0.isEmpty && seen.insert($0.lowercased()).inserted }
     }
 
     // MARK: İşlemler
@@ -438,17 +476,53 @@ final class Assistant: ObservableObject {
             _ = store.addShopping(items.isEmpty ? [a.title].compactMap { $0 } : items)
             return nil
 
+        case "check_shopping":
+            store.checkShopping(Self.items(a))
+            return nil
+
         case "remove_shopping":
-            store.removeShopping(a.items ?? [a.title].compactMap { $0 })
+            store.removeShopping(Self.items(a))
             return nil
 
         case "clear_shopping":
-            store.shopping.removeAll()
+            store.clearAllShopping()
             return nil
 
         case "add_call":
             guard let person = a.person ?? a.title, !person.isEmpty else { return nil }
-            store.calls.append(CallItem(person: person, reason: a.person == nil ? nil : a.title))
+            store.addCall(person: person, reason: a.person == nil ? nil : a.title)
+            return nil
+
+        case "reopen_task":
+            if let id = a.target_id { store.reopen(taskID: id) }
+            return nil
+
+        // Kullanıcının listeleri (Eczane, Günlük ilaçlar…)
+        case "create_list":
+            guard let name = a.title, !name.isEmpty else { return nil }
+            store.createList(name: name, daily: Self.isDaily(a.note))
+            if let items = a.items, !items.isEmpty { store.addListItems(items, to: name) }
+            return nil
+
+        case "add_list_items":
+            guard let name = a.title, !name.isEmpty else { return nil }
+            store.addListItems(a.items ?? [], to: name, daily: Self.isDaily(a.note))
+            return nil
+
+        case "check_list_items":
+            store.checkListItems(a.items ?? [], in: a.title)
+            return nil
+
+        case "remove_list_items":
+            store.removeListItems(a.items ?? [], from: a.title)
+            return nil
+
+        case "delete_list":
+            if let id = a.target_id, store.lists.contains(where: { $0.id == id }) {
+                store.trashList(id: id)
+            } else if let l = store.list(named: a.title) {
+                store.trashList(id: l.id)
+            }
             return nil
 
         case "complete_call":
@@ -464,6 +538,32 @@ final class Assistant: ObservableObject {
             }
             return nil
 
+        case "update_event":
+            guard let id = a.target_id else { return nil }
+            let ok = await CalendarService.shared.update(id: id, title: a.title, start: DateText.parse(a.due),
+                                                          end: DateText.parse(a.end), location: a.location)
+            return ok ? nil : "Takvimdeki etkinliği değiştiremedim; takvim iznini kontrol eder misin?"
+
+        case "delete_event":
+            guard let id = a.target_id else { return nil }
+            let ok = await CalendarService.shared.delete(id: id)
+            return ok ? nil : "Takvimdeki etkinliği silemedim."
+
+        case "open_maps":
+            guard let dest = a.destination, !dest.isEmpty else { return nil }
+            let ok = await RouteService.shared.openDirections(to: dest, from: a.origin)
+            return ok ? nil : "Bu adresi haritada bulamadım."
+
+        case "send_message":
+            guard let person = a.person, !person.isEmpty, let text = a.note, !text.isEmpty else { return nil }
+            let ok = await ContactsService.message(person, text: text, whatsapp: (a.title ?? "").lowercased().contains("whatsapp"))
+            return ok ? nil : "\(person) rehberde telefon numarasıyla bulunamadı."
+
+        case "call_now":
+            guard let person = a.person ?? a.title, !person.isEmpty else { return nil }
+            let ok = await ContactsService.call(person)
+            return ok ? nil : "\(person) rehberde bulunamadı ya da rehber izni kapalı."
+
         case "get_route":
             guard let dest = a.destination, !dest.isEmpty else { return nil }
             if let r = await RouteService.shared.route(from: a.origin, to: dest) {
@@ -478,7 +578,7 @@ final class Assistant: ObservableObject {
             return nil
 
         case "forget":
-            if let id = a.target_id { store.memory.removeAll { $0.id == id } }
+            if let id = a.target_id { store.trashMemory(id: id) }
             return nil
 
         case "add_special_day":
@@ -508,6 +608,16 @@ final class Assistant: ObservableObject {
         default:
             return nil
         }
+    }
+
+    private static func items(_ a: AssistantAction) -> [String] {
+        let list = a.items ?? []
+        return list.isEmpty ? [a.title].compactMap { $0 } : list
+    }
+
+    private static func isDaily(_ note: String?) -> Bool {
+        let n = (note ?? "").lowercased(with: Locale(identifier: "tr_TR"))
+        return n.contains("daily") || n.contains("günlük") || n.contains("her gün")
     }
 
     // MARK: İlk açılış izinleri

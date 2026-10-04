@@ -13,6 +13,10 @@ final class Store: ObservableObject {
     @Published var messages: [ChatMessage] = [] { didSet { save() } }
     @Published var specials: [SpecialDay] = [] { didSet { save() } }
     @Published var moments: [Moment] = [] { didSet { save() } }
+    /// Kullanıcının açtığı listeler (Eczane, Günlük ilaçlar…)
+    @Published var lists: [CustomList] = [] { didSet { save() } }
+    /// Silinenler — 30 gün geri alınabilir
+    @Published var trash: [TrashEntry] = [] { didSet { save() } }
 
     /// Diskte ve eşitlemede kullanılan tek veri biçimi (bilgisayar uygulaması da aynısını kullanır)
     struct Snapshot: Codable {
@@ -24,6 +28,8 @@ final class Store: ObservableObject {
         // Sonradan eklenenler: eski kayıtlarda yok → isteğe bağlı
         var specials: [SpecialDay]?
         var moments: [Moment]?
+        var lists: [CustomList]?
+        var trash: [TrashEntry]?
         var updatedAt: Date?
     }
 
@@ -54,7 +60,8 @@ final class Store: ObservableObject {
 
     var snapshot: Snapshot {
         Snapshot(tasks: tasks, shopping: shopping, calls: calls, memory: memory,
-                 messages: Array(messages.suffix(200)), specials: specials, moments: moments, updatedAt: updatedAt)
+                 messages: Array(messages.suffix(300)), specials: specials, moments: moments,
+                 lists: lists, trash: trash, updatedAt: updatedAt)
     }
 
     /// Eşitlemeden gelen daha yeni veriyi uygula (hatırlatmaları da günceller)
@@ -77,6 +84,9 @@ final class Store: ObservableObject {
         messages = snap.messages
         specials = snap.specials ?? []
         moments = snap.moments ?? []
+        // Eski bilgisayar uygulaması bu alanları göndermez → o zaman buradakini koru
+        lists = snap.lists ?? lists
+        trash = snap.trash ?? trash
         updatedAt = remoteDate
 
         // Yalnızca değişen hatırlatmaları yeniden kur
@@ -115,6 +125,8 @@ final class Store: ObservableObject {
         messages = snap.messages
         specials = snap.specials ?? []
         moments = snap.moments ?? []
+        lists = snap.lists ?? []
+        trash = snap.trash ?? []
         updatedAt = snap.updatedAt ?? .distantPast
     }
 
@@ -198,6 +210,7 @@ final class Store: ObservableObject {
     func complete(taskID: String) {
         guard let i = tasks.firstIndex(where: { $0.id == taskID }) else { return }
         tasks[i].done = true
+        tasks[i].doneAt = Date()
         Reminders.shared.cancel(tasks[i])
         // Eski tamamlanmışları temizle (son 50'yi tut)
         let doneOnes = tasks.filter { $0.done }
@@ -207,46 +220,336 @@ final class Store: ObservableObject {
         }
     }
 
+    /// Görevi geri alınabilir şekilde siler (çöp kutusuna)
     func delete(taskID: String) {
         guard let t = task(taskID) else { return }
         Reminders.shared.cancel(t)
+        addToTrash(TrashEntry(kind: .task, task: t))
         tasks.removeAll { $0.id == taskID }
     }
 
+    /// İşareti kaldır: görev yeniden açılır, hatırlatması (zamanı geçmediyse) yeniden kurulur
+    func reopen(taskID: String) {
+        guard let i = tasks.firstIndex(where: { $0.id == taskID }) else { return }
+        tasks[i].done = false
+        tasks[i].doneAt = nil
+        Reminders.shared.schedule(tasks[i])
+    }
+
+    func toggle(taskID: String) {
+        guard let t = task(taskID) else { return }
+        if t.done { reopen(taskID: taskID) } else { complete(taskID: taskID) }
+    }
+
+    /// Bugün tamamlanan görevler (listede üstü çizili görünür, geri alınabilir)
+    var doneToday: [TaskItem] {
+        tasks.filter { t in
+            guard t.done, let at = t.doneAt else { return false }
+            return Calendar.current.isDateInToday(at)
+        }
+        .sorted { ($0.doneAt ?? .distantPast) > ($1.doneAt ?? .distantPast) }
+    }
+
     // MARK: Alışveriş
+
+    private static let tr = Locale(identifier: "tr_TR")
+    private static func key(_ s: String) -> String {
+        s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(with: tr)
+    }
+    private static func capitalized(_ s: String) -> String {
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.prefix(1).uppercased(with: tr) + t.dropFirst()
+    }
+    /// "domates" ↔ "Domates", "süt" ↔ "2 süt" gibi gevşek eşleşme
+    private static func loose(_ a: String, _ b: String) -> Bool {
+        let x = key(a), y = key(b)
+        return x == y || x.contains(y) || y.contains(x)
+    }
+
+    var openShopping: [ShoppingItem] { shopping.filter { !$0.done } }
 
     func addShopping(_ names: [String]) -> [String] {
         var added: [String] = []
         for raw in names {
             let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !name.isEmpty else { continue }
-            if shopping.contains(where: { $0.name.lowercased(with: Locale(identifier: "tr_TR")) == name.lowercased(with: Locale(identifier: "tr_TR")) }) { continue }
-            shopping.append(ShoppingItem(name: name.prefix(1).uppercased(with: Locale(identifier: "tr_TR")) + name.dropFirst()))
+            if let i = shopping.firstIndex(where: { Self.key($0.name) == Self.key(name) }) {
+                // Daha önce alınmış olarak işaretliyse yeniden aç
+                if shopping[i].done { shopping[i].done = false; added.append(name) }
+                continue
+            }
+            shopping.append(ShoppingItem(name: Self.capitalized(name)))
             added.append(name)
         }
         return added
     }
 
-    func removeShopping(_ names: [String]) {
-        let tr = Locale(identifier: "tr_TR")
+    /// Sesli "aldım": ürünü alındı olarak işaretler (silmez)
+    func checkShopping(_ names: [String]) {
         for raw in names {
-            let key = raw.lowercased(with: tr)
-            shopping.removeAll { item in
-                let n = item.name.lowercased(with: tr)
-                return n == key || n.contains(key) || key.contains(n)
+            for i in shopping.indices where !shopping[i].done && Self.loose(shopping[i].name, raw) {
+                shopping[i].done = true
             }
         }
     }
 
+    func toggleShopping(id: String) {
+        guard let i = shopping.firstIndex(where: { $0.id == id }) else { return }
+        shopping[i].done.toggle()
+    }
+
+    func trashShopping(id: String) {
+        guard let item = shopping.first(where: { $0.id == id }) else { return }
+        addToTrash(TrashEntry(kind: .shopping, shopping: item))
+        shopping.removeAll { $0.id == id }
+    }
+
+    /// Sesli "listeden çıkar": çöp kutusuna taşır
+    func removeShopping(_ names: [String]) {
+        let ids = shopping.filter { item in names.contains { Self.loose(item.name, $0) } }.map(\.id)
+        ids.forEach { trashShopping(id: $0) }
+    }
+
+    /// Alınmış (işaretli) ürünleri temizle → çöp kutusuna
+    func clearDoneShopping() {
+        shopping.filter(\.done).map(\.id).forEach { trashShopping(id: $0) }
+    }
+
+    func clearAllShopping() {
+        shopping.map(\.id).forEach { trashShopping(id: $0) }
+    }
+
     // MARK: Aramalar
 
-    func completeCall(id: String?, person: String?) {
-        if let id, calls.contains(where: { $0.id == id }) {
-            calls.removeAll { $0.id == id }
-        } else if let person {
-            let key = person.lowercased(with: Locale(identifier: "tr_TR"))
-            calls.removeAll { $0.person.lowercased(with: Locale(identifier: "tr_TR")).contains(key) }
+    var openCalls: [CallItem] { calls.filter { !$0.done } }
+
+    func addCall(person: String, reason: String?) {
+        if let i = calls.firstIndex(where: { Self.key($0.person) == Self.key(person) }) {
+            calls[i].done = false
+            if let reason, !reason.isEmpty { calls[i].reason = reason }
+            return
         }
+        calls.append(CallItem(person: Self.capitalized(person), reason: reason))
+    }
+
+    func toggleCall(id: String) {
+        guard let i = calls.firstIndex(where: { $0.id == id }) else { return }
+        calls[i].done.toggle()
+    }
+
+    func trashCall(id: String) {
+        guard let item = calls.first(where: { $0.id == id }) else { return }
+        addToTrash(TrashEntry(kind: .call, call: item))
+        calls.removeAll { $0.id == id }
+    }
+
+    /// Sesli "X'i aradım": arandı olarak işaretler
+    func completeCall(id: String?, person: String?) {
+        if let id, let i = calls.firstIndex(where: { $0.id == id }) {
+            calls[i].done = true
+        } else if let person {
+            for i in calls.indices where !calls[i].done && Self.loose(calls[i].person, person) {
+                calls[i].done = true
+            }
+        }
+    }
+
+    // MARK: Hafıza
+
+    func trashMemory(id: String) {
+        guard let note = memory.first(where: { $0.id == id }) else { return }
+        addToTrash(TrashEntry(kind: .memory, memory: note))
+        memory.removeAll { $0.id == id }
+    }
+
+    // MARK: Kullanıcının listeleri
+
+    /// Ada göre listeyi bul ("eczane" → "Eczane", "ilaç listem" → "Günlük ilaçlar" gibi gevşek)
+    func list(named name: String?) -> CustomList? {
+        guard let name, !name.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        let k = Self.key(name)
+            .replacingOccurrences(of: " listesi", with: "")
+            .replacingOccurrences(of: " listem", with: "")
+            .replacingOccurrences(of: "listesi", with: "")
+            .trimmingCharacters(in: .whitespaces)
+        if let exact = lists.first(where: { Self.key($0.name) == k }) { return exact }
+        return lists.first { Self.loose($0.name, k) }
+    }
+
+    @discardableResult
+    func createList(name raw: String, daily: Bool = false) -> CustomList {
+        let name = Self.capitalized(raw
+            .replacingOccurrences(of: " listesi", with: "")
+            .replacingOccurrences(of: " Listesi", with: ""))
+        if let existing = list(named: name) {
+            if daily, let i = lists.firstIndex(where: { $0.id == existing.id }) { lists[i].daily = true }
+            return lists.first { $0.id == existing.id } ?? existing
+        }
+        let l = CustomList(name: name, icon: CustomList.icon(for: name), daily: daily, lastReset: DateText.dayKey(Date()))
+        lists.append(l)
+        return l
+    }
+
+    func renameList(id: String, to name: String, daily: Bool) {
+        guard let i = lists.firstIndex(where: { $0.id == id }) else { return }
+        let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !n.isEmpty { lists[i].name = Self.capitalized(n); lists[i].icon = CustomList.icon(for: n) }
+        lists[i].daily = daily
+    }
+
+    /// Listeye satır ekler; liste yoksa oluşturur. Eklenenleri döndürür.
+    @discardableResult
+    func addListItems(_ texts: [String], to listName: String, daily: Bool = false) -> [String] {
+        let l = createList(name: listName, daily: daily)
+        guard let i = lists.firstIndex(where: { $0.id == l.id }) else { return [] }
+        var added: [String] = []
+        for raw in texts {
+            let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !t.isEmpty else { continue }
+            if let j = lists[i].items.firstIndex(where: { Self.key($0.text) == Self.key(t) }) {
+                if lists[i].items[j].done { lists[i].items[j].done = false; added.append(t) }
+                continue
+            }
+            lists[i].items.append(ListItem(text: Self.capitalized(t)))
+            added.append(t)
+        }
+        return added
+    }
+
+    func toggleListItem(listID: String, itemID: String) {
+        guard let i = lists.firstIndex(where: { $0.id == listID }),
+              let j = lists[i].items.firstIndex(where: { $0.id == itemID }) else { return }
+        lists[i].items[j].done.toggle()
+    }
+
+    /// Sesli "ilaçlarımı içtim" → işaretle
+    func checkListItems(_ texts: [String], in listName: String?) {
+        guard let l = list(named: listName), let i = lists.firstIndex(where: { $0.id == l.id }) else { return }
+        // Hiç satır söylenmediyse ("ilaçlarımı içtim") hepsini işaretle
+        if texts.isEmpty {
+            for j in lists[i].items.indices { lists[i].items[j].done = true }
+            return
+        }
+        for j in lists[i].items.indices where texts.contains(where: { Self.loose(lists[i].items[j].text, $0) }) {
+            lists[i].items[j].done = true
+        }
+    }
+
+    func trashListItem(listID: String, itemID: String) {
+        guard let i = lists.firstIndex(where: { $0.id == listID }),
+              let item = lists[i].items.first(where: { $0.id == itemID }) else { return }
+        addToTrash(TrashEntry(kind: .listItem, listItem: item, listID: listID, listName: lists[i].name))
+        lists[i].items.removeAll { $0.id == itemID }
+    }
+
+    func removeListItems(_ texts: [String], from listName: String?) {
+        guard let l = list(named: listName) else { return }
+        let ids = l.items.filter { item in texts.contains { Self.loose(item.text, $0) } }.map(\.id)
+        ids.forEach { trashListItem(listID: l.id, itemID: $0) }
+    }
+
+    func clearDoneItems(listID: String) {
+        guard let l = lists.first(where: { $0.id == listID }) else { return }
+        l.items.filter(\.done).forEach { trashListItem(listID: listID, itemID: $0.id) }
+    }
+
+    func trashList(id: String) {
+        guard let l = lists.first(where: { $0.id == id }) else { return }
+        addToTrash(TrashEntry(kind: .list, list: l))
+        lists.removeAll { $0.id == id }
+    }
+
+    /// Günlük listelerde yeni günde tüm işaretleri kaldır (ör. her sabah ilaçlar yeniden işaretlenmemiş görünür)
+    func resetDailyLists() {
+        let today = DateText.dayKey(Date())
+        guard lists.contains(where: { $0.daily && $0.lastReset != today }) else { return }
+        var copy = lists
+        for i in copy.indices where copy[i].daily && copy[i].lastReset != today {
+            for j in copy[i].items.indices { copy[i].items[j].done = false }
+            copy[i].lastReset = today
+        }
+        lists = copy
+    }
+
+    // MARK: Çöp kutusu (30 gün)
+
+    private func addToTrash(_ entry: TrashEntry) {
+        var t = trash
+        t.insert(entry, at: 0)
+        let limit = Date().addingTimeInterval(-30 * 86400)
+        t.removeAll { $0.deletedAt < limit }
+        if t.count > 300 { t = Array(t.prefix(300)) }
+        trash = t
+    }
+
+    func restore(_ entry: TrashEntry) {
+        switch entry.kind {
+        case .task:
+            if let t = entry.task, !tasks.contains(where: { $0.id == t.id }) {
+                tasks.append(t)
+                Reminders.shared.schedule(t)
+            }
+        case .shopping:
+            if let s = entry.shopping, !shopping.contains(where: { $0.id == s.id }) { shopping.append(s) }
+        case .call:
+            if let c = entry.call, !calls.contains(where: { $0.id == c.id }) { calls.append(c) }
+        case .memory:
+            if let m = entry.memory, !memory.contains(where: { $0.id == m.id }) { memory.append(m) }
+        case .listItem:
+            guard let item = entry.listItem else { break }
+            if let i = lists.firstIndex(where: { $0.id == entry.listID }) {
+                if !lists[i].items.contains(where: { $0.id == item.id }) { lists[i].items.append(item) }
+            } else {
+                // Liste de silinmişse aynı adla yeniden aç
+                var l = CustomList(name: entry.listName ?? "Liste")
+                if let id = entry.listID { l.id = id }
+                l.icon = CustomList.icon(for: l.name)
+                l.items = [item]
+                lists.append(l)
+            }
+        case .list:
+            if let l = entry.list, !lists.contains(where: { $0.id == l.id }) { lists.append(l) }
+        }
+        trash.removeAll { $0.id == entry.id }
+    }
+
+    func purge(_ entry: TrashEntry) {
+        trash.removeAll { $0.id == entry.id }
+    }
+
+    func emptyTrash() {
+        trash.removeAll()
+    }
+
+    /// Uygulama açılışında: süresi dolanları at, günlük listeleri sıfırla
+    func housekeeping() {
+        let limit = Date().addingTimeInterval(-30 * 86400)
+        if trash.contains(where: { $0.deletedAt < limit }) { trash.removeAll { $0.deletedAt < limit } }
+        resetDailyLists()
+    }
+}
+
+// MARK: - Dayanıklı okuma
+
+/// Bozuk tek bir kayıt (ör. eski bilgisayar sürümünden) tüm verinin okunmasını engellemesin
+private struct Lossy<T: Decodable>: Decodable {
+    let value: T?
+    init(from decoder: Decoder) throws { value = try? T(from: decoder) }
+}
+
+extension Store.Snapshot {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        tasks = try c.decode([TaskItem].self, forKey: .tasks)
+        shopping = try c.decode([ShoppingItem].self, forKey: .shopping)
+        calls = try c.decode([CallItem].self, forKey: .calls)
+        memory = try c.decode([MemoryNote].self, forKey: .memory)
+        messages = try c.decode([ChatMessage].self, forKey: .messages)
+        specials = try c.decodeIfPresent([SpecialDay].self, forKey: .specials)
+        moments = try c.decodeIfPresent([Moment].self, forKey: .moments)
+        lists = (try? c.decodeIfPresent([Lossy<CustomList>].self, forKey: .lists))?.compactMap { $0.value }
+        trash = (try? c.decodeIfPresent([Lossy<TrashEntry>].self, forKey: .trash))?.compactMap { $0.value }
+        updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt)
     }
 }
 
@@ -282,6 +585,13 @@ final class AppSettings: ObservableObject {
         return list[max(0, min(list.count - 1, i))]
     }
     @Published var voiceSpeed: Double { didSet { UserDefaults.standard.set(voiceSpeed, forKey: "voiceSpeed") } }
+    /// Apple sunucusunda konuşma tanıma (Türkçede daha doğru); kapalıysa cihaz üzerinde
+    @Published var cloudRecognition: Bool { didSet { UserDefaults.standard.set(cloudRecognition, forKey: "cloudRecognition") } }
+    /// Sabah özeti: her gün bu saatte bildirim gelir, dokununca Jarvis hava, takvim ve haberleri okur
+    @Published var morningBrief: Bool { didSet { UserDefaults.standard.set(morningBrief, forKey: "morningBrief"); Reminders.shared.scheduleMorningBrief() } }
+    @Published var morningBriefMinutes: Int { didSet { UserDefaults.standard.set(morningBriefMinutes, forKey: "morningBriefMinutes"); Reminders.shared.scheduleMorningBrief() } }
+    /// Yol tarifinde açılacak harita: apple · google · yandex
+    @Published var mapsApp: String { didSet { UserDefaults.standard.set(mapsApp, forKey: "mapsApp") } }
 
     private init() {
         let d = UserDefaults.standard
@@ -296,6 +606,10 @@ final class AppSettings: ObservableObject {
         voiceFemale = d.object(forKey: "voiceFemale") as? Bool ?? false
         voiceTone = d.object(forKey: "voiceTone") as? Double ?? 0
         voiceSpeed = d.object(forKey: "voiceSpeed") as? Double ?? 1.05
+        cloudRecognition = d.object(forKey: "cloudRecognition") as? Bool ?? true
+        morningBrief = d.object(forKey: "morningBrief") as? Bool ?? false
+        morningBriefMinutes = d.object(forKey: "morningBriefMinutes") as? Int ?? 8 * 60
+        mapsApp = d.string(forKey: "mapsApp") ?? "apple"
         token = Keychain.get("appToken") ?? ""
     }
 
