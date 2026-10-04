@@ -35,7 +35,7 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         ITSAppUsesNonExemptEncryption: false
-        LSApplicationQueriesSchemes: [tel]
+        LSApplicationQueriesSchemes: [tel, sms, comgooglemaps, yandexnavi, whatsapp]
         UILaunchScreen:
           UIColorName: ""
         UIApplicationSceneManifest:
