@@ -29,7 +29,19 @@ const ACTION_TYPES = [
   "add_special_day", // her yıl tekrar eden özel gün: doğum günü, yıl dönümü (title, person, due, note = tür)
   "delete_special_day", // özel günü sil (target_id)
   "add_moment",      // yaşanmış bir anıyı sakla (title, due = tarih, location, note)
-  "show_calendar"    // uygulamada takvimi aç (note: "week" | "year" | "moments")
+  "show_calendar",   // uygulamada takvimi aç (note: "week" | "year" | "moments")
+  "check_shopping",  // alındı olarak işaretle (items) — silmez
+  "reopen_task",     // tamamlanan görevi yeniden aç (target_id)
+  "create_list",     // yeni liste aç (title = ad, note = "daily" ise günlük liste, items = ilk satırlar)
+  "add_list_items",  // listeye ekle (title = liste adı, items); liste yoksa açılır
+  "check_list_items",// listede işaretle (title, items; items boşsa hepsi)
+  "remove_list_items", // listeden sil (title, items) — çöp kutusuna gider
+  "delete_list",     // listeyi sil (title ya da target_id)
+  "update_event",    // takvim etkinliğini değiştir / ertele (target_id, title, due = yeni başlangıç, end, location)
+  "delete_event",    // takvim etkinliğini sil (target_id)
+  "open_maps",       // harita uygulamasında yol tarifini hemen aç (destination, origin)
+  "send_message",    // mesaj hazırla (person, note = metin, title = "whatsapp" ya da "sms")
+  "call_now"         // hemen ara (person = kişi ya da numara: "112", "155")
 ];
 
 const nullableString = { type: ["string", "null"] };
@@ -69,6 +81,41 @@ const RESPONSE_SCHEMA = {
 };
 
 function systemPrompt(userName, assistantName) {
+  return baseSystemPrompt(userName, assistantName) + EXTRA_RULES;
+}
+
+const EXTRA_RULES = `
+
+SAYILAR VE YAZIM
+- Görev başlıklarında, liste maddelerinde, notlarda ve cevaplarında sayıları HER ZAMAN rakamla yaz: "2 domates", "saat 16:30", "3 kutu", "15 Ekim", "%20".
+- Mesajın başında "SESLİ: evet" yazıyorsa mesaj konuşmadan yazıya çevrilmiştir: yanlış duyulmuş sözcükleri bağlamdan düzelt (benzer sesli kişi, ürün, liste ve yer adlarını listelerdeki/hafızadaki doğru yazımla eşleştir; "carvis/çarvis" = Jarvis). Kaydettiğin başlık ve maddeler düzgün yazılmış olsun. Emin olamadığın önemli bir ad varsa kısaca teyit et.
+
+LİSTELER (kullanıcının açtıkları)
+- Bağlamdaki KULLANICI LİSTELERİ'ni kullan. "Eczane diye bir liste aç", "ilaç listesi oluştur" → create_list. Her gün tekrarlanan şeyler (günlük ilaçlar, vitaminler, rutin) için note: "daily".
+- "Eczane listesine parol ekle" → add_list_items (title: "Eczane", items: ["Parol"]). Liste yoksa yine add_list_items kullan, uygulama açar. Alışveriş/market için add_shopping kullanmaya devam et.
+- "İlaçlarımı içtim", "parolü aldım" → check_list_items. "Listeden çıkar" → remove_list_items. "Listeyi sil" → delete_list.
+- Listeye dokunmak işaretler, silmez. Silinenler 30 gün çöp kutusunda kalır; kullanıcı sorarsa Listeler sekmesindeki çöp simgesinden geri alabileceğini söyle.
+- Alışverişte "aldım" → check_shopping (işaretle). "Listeden çıkar/sil" → remove_shopping.
+
+TAKVİM DÜZENLEME
+- TAKVİM'deki etkinliklerin id'si var. "Yarınki toplantıyı 15:00'e al", "dişçiyi cumaya ertele" → update_event (target_id, due = yeni başlangıç; süre korunur). Başlık/yer değişikliği de update_event. "Toplantıyı iptal et / sil" → delete_event. Hangi etkinlik olduğu belirsizse sor.
+- Görevler için update_task (zamanını değiştir), reopen_task (yanlışlıkla tamamlandıysa).
+
+HARİTA, MESAJ, ARAMA
+- "Yol tarifi başlat", "haritayı aç", "navigasyonu aç", "beni X'e götür" → open_maps (destination). Sadece süre soruluyorsa get_route.
+- "Ahmet'e toplantıdayım, sonra arayacağım yaz" → send_message (person: "Ahmet", note: mesaj metni, title: "sms"; WhatsApp denirse "whatsapp"). Mesajı kullanıcının ağzından, kısa ve kibar yaz. Uygulama mesajı hazırlar, kullanıcı gönder'e basar.
+- "Annemi ara", "112'yi ara" → call_now (person). Acil durum (yangın, kaza, sağlık) söylenirse hemen call_now ile 112'yi ara ve cevabında sakin, kısa yönlendirme yap.
+- Gelen aramaları duyurmak ve meşgulken otomatik cevap iPhone'un kendi ayarlarıyla yapılır (Telefon → Aramaları Seslendir, Mesajla Yanıtla); Jarvis'in Ayarlar → Aramalar bölümünde anlatıldığını söyle.
+
+HAVA DURUMU
+- Bağlamda HAVA DURUMU varsa kullan; uydurma. Takvimdeki etkinliklerle ilişkilendir: dışarıda/uzak bir etkinlik varken yağmur → şemsiye ve trafiğe ek süre öner; soğuk/rüzgârlı → mont; çok sıcak → su. Vokal kaydı/sahne günü soğuk ya da kuru havaysa boğazı koruma (ılık su, atkı) öner.
+- Kullanıcı sormadıkça her cevapta hava anlatma; plan, yarın, sabah özeti ya da dışarı çıkma konuşulurken kısaca an.
+
+SABAH ÖZETİ VE HABERLER
+- "Günaydın", "sabah özeti", "haberler ne", "gündemde ne var" → bu cevap 1-3 cümle kuralından muaftır ama yine sesli okunacak, akıcı ve en fazla 10-12 cümle olsun:
+  1) kısa selam, 2) bugünün havası ve takvime göre önerisi, 3) bugünkü etkinlikler/kritik görevler, yaklaşan özel gün varsa, 4) HABERLER bağlamından Türkiye'den 3, dünyadan 2 önemli başlığı tarafsız ve kısaca özetle. Kaynak verilmemiş haber uydurma; haber bağlamı yoksa haberlere ulaşamadığını söyle.`;
+
+function baseSystemPrompt(userName, assistantName) {
   return `Sen ${userName} adlı kullanıcının kişisel asistanı ${assistantName}'sin. Görevin onun hayatını organize etmek: görevler, hatırlatıcılar, alışveriş listesi, aranacak kişiler, takvim, rotalar ve günlük planlar.
 
 KONUŞMA TARZI
@@ -93,7 +140,7 @@ Kullanıcı önemi açıkça söylerse ona uy.
 ALIŞVERİŞ
 - "Alınacaklara ekle", "evde X bitti", "X eksik" gibi cümlelerde add_shopping kullan; ürünleri ayrı ayrı items'a yaz (ör. ["Domates", "Damacana su"]).
 - "Ne alacaktım?" denirse listeyi cevabında oku. Damacana su, tüp, deterjan gibi ağır/hacimli ürünler için eve sipariş verilebileceğini hatırlat.
-- "Aldım" denirse remove_shopping.
+- "Aldım" denirse check_shopping (alındı olarak işaretlenir, listede üstü çizili kalır).
 
 ARAMALAR
 - "X'i aramam lazım", "X'i arayacağım" → add_call (person = kişi, title = konu varsa). Bir saat verildiyse ayrıca add_task ile hatırlatıcı da kur.
@@ -131,7 +178,7 @@ HAFTALIK PROGRAM
 function buildContext(ctx) {
   const lines = [];
   lines.push(`ŞU AN: ${ctx.now || "bilinmiyor"} (${ctx.timezone || "Europe/Istanbul"})`);
-  if (ctx.location) lines.push(`KONUM: ${ctx.location}`);
+  if (typeof ctx.location === "string" && ctx.location) lines.push(`KONUM: ${ctx.location}`);
   const list = (title, arr, fmt) => {
     lines.push(`${title}:`);
     if (!arr || arr.length === 0) lines.push("  (boş)");
@@ -140,11 +187,13 @@ function buildContext(ctx) {
   list("AÇIK GÖREVLER", ctx.tasks, (t) => `[id:${t.id}] ${t.title}${t.due ? " | " + t.due : ""} | önem:${t.priority || "normal"}`);
   list("ALIŞVERİŞ LİSTESİ", ctx.shopping, (s) => `[id:${s.id}] ${s.name}`);
   list("ARANACAKLAR", ctx.calls, (c) => `[id:${c.id}] ${c.person}${c.reason ? " — " + c.reason : ""}`);
-  list("TAKVİM (önümüzdeki günler)", ctx.events, (e) => `${e.start}${e.end ? "–" + e.end : ""} ${e.title}${e.location ? " @ " + e.location : ""}`);
+  list("TAKVİM (önümüzdeki günler)", ctx.events, (e) => `${e.id ? "[id:" + e.id + "] " : ""}${e.start}${e.end ? "–" + e.end : ""} ${e.title}${e.location ? " @ " + e.location : ""}`);
   list("HAFIZA", ctx.memory, (m) => `[id:${m.id}] ${m.text}`);
   list("ÖZEL GÜNLER (yıllık)", ctx.specials, (d) => `[id:${d.id}] ${d.title}${d.person ? " (" + d.person + ")" : ""} | ${d.kind} | sıradaki: ${d.next}${d.years ? " | " + d.years + ". yıl" : ""}`);
   list("YAKLAŞAN BAYRAMLAR VE ÖNEMLİ GÜNLER", ctx.holidays, (h) => `${h.date} ${h.title}`);
   list("ANILAR (son)", ctx.moments, (m) => `${m.date} ${m.title}${m.place ? " @ " + m.place : ""}${m.note ? " — " + m.note : ""}`);
+  list("KULLANICI LİSTELERİ", ctx.lists, (l) =>
+    `[id:${l.id}] ${l.name}${l.daily ? " (günlük)" : ""}: ${(l.items || []).join(", ") || "(boş)"}${l.done?.length ? " | işaretli: " + l.done.join(", ") : ""}`);
   return lines.join("\n");
 }
 
@@ -207,12 +256,20 @@ async function handleChat(request, env) {
     .slice(-12)
     .map((m) => ({ role: m.role, content: m.content.slice(0, 2000) }));
 
+  // Hava durumu ve (istenirse) haberler — paralel, kısa zaman aşımıyla; alınamazsa sohbet yine çalışır
+  const [weather, news] = await Promise.all([
+    getWeather(ctx.location, ctx.timezone).catch(() => null),
+    wantsNews(message) ? getNews().catch(() => null) : Promise.resolve(null)
+  ]);
+  const extra = [weather, news].filter(Boolean).join("\n");
+  const voiceTag = body.voice === true ? "SESLİ: evet\n" : "";
+
   const payload = {
     model: env.OPENAI_MODEL || DEFAULT_MODEL,
     instructions: systemPrompt(ctx.userName || "Ertunç", ctx.assistantName || "Jarvis"),
     input: [
       ...history,
-      { role: "user", content: `${buildContext(ctx)}\n\nKULLANICI: ${message.slice(0, 4000)}` }
+      { role: "user", content: `${buildContext(ctx)}${extra ? "\n" + extra : ""}\n\n${voiceTag}KULLANICI: ${message.slice(0, 4000)}` }
     ],
     text: {
       format: { type: "json_schema", name: "jarvis_response", strict: true, schema: RESPONSE_SCHEMA }
@@ -241,6 +298,127 @@ async function handleChat(request, env) {
     return json({ error: "Cevap çözümlenemedi.", detail: String(e.message || e) }, 502);
   }
   return json(sanitize(parsed));
+}
+
+// --- Hava durumu (Open-Meteo, anahtar gerektirmez) ---
+const WMO = {
+  0: "açık", 1: "çoğunlukla açık", 2: "parçalı bulutlu", 3: "kapalı", 45: "sisli", 48: "kırağılı sis",
+  51: "hafif çisenti", 53: "çisenti", 55: "yoğun çisenti", 56: "dondurucu çisenti", 57: "dondurucu çisenti",
+  61: "hafif yağmur", 63: "yağmur", 65: "kuvvetli yağmur", 66: "dondurucu yağmur", 67: "dondurucu yağmur",
+  71: "hafif kar", 73: "kar", 75: "yoğun kar", 77: "kar taneleri", 80: "hafif sağanak", 81: "sağanak", 82: "şiddetli sağanak",
+  85: "kar sağanağı", 86: "yoğun kar sağanağı", 95: "gök gürültülü fırtına", 96: "dolu ile fırtına", 99: "dolu ile şiddetli fırtına"
+};
+const ISTANBUL = { lat: 41.01, lon: 28.98 };
+
+async function fetchWithTimeout(url, ms, init = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function getWeather(loc, timezone) {
+  const lat = Number(loc?.lat), lon = Number(loc?.lon);
+  const p = Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180 ? { lat, lon } : ISTANBUL;
+  const tz = typeof timezone === "string" && /^[A-Za-z_]+\/[A-Za-z_]+$/.test(timezone) ? timezone : "Europe/Istanbul";
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${p.lat.toFixed(2)}&longitude=${p.lon.toFixed(2)}`
+    + "&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,precipitation"
+    + "&hourly=temperature_2m,precipitation_probability,weather_code"
+    + "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,wind_speed_10m_max"
+    + `&timezone=${encodeURIComponent(tz)}&forecast_days=4&wind_speed_unit=kmh`;
+  const res = await fetchWithTimeout(url, 3000);
+  if (!res.ok) return null;
+  const d = await res.json();
+  const lines = [`HAVA DURUMU (${p === ISTANBUL ? "İstanbul" : "bulunduğun yer"}):`];
+  const c = d.current;
+  if (c) {
+    lines.push(`  Şu an: ${Math.round(c.temperature_2m)}°C (hissedilen ${Math.round(c.apparent_temperature)}°C), ${WMO[c.weather_code] || "?"}, rüzgâr ${Math.round(c.wind_speed_10m)} km/sa`);
+  }
+  // Bugünün kalan saatleri (3 saatte bir)
+  const h = d.hourly;
+  if (h?.time?.length) {
+    const nowKey = (c?.time || h.time[0]).slice(0, 13);
+    const today = nowKey.slice(0, 10);
+    const parts = [];
+    for (let i = 0; i < h.time.length; i++) {
+      const t = h.time[i];
+      if (t.slice(0, 10) !== today || t.slice(0, 13) < nowKey) continue;
+      const hour = Number(t.slice(11, 13));
+      if (hour % 3 !== 0) continue;
+      parts.push(`${t.slice(11, 16)} ${Math.round(h.temperature_2m[i])}° ${WMO[h.weather_code[i]] || ""}${h.precipitation_probability[i] >= 20 ? " yağış %" + h.precipitation_probability[i] : ""}`);
+    }
+    if (parts.length) lines.push("  Bugün: " + parts.join(" · "));
+  }
+  const dl = d.daily;
+  if (dl?.time?.length) {
+    for (let i = 0; i < Math.min(dl.time.length, 4); i++) {
+      lines.push(`  ${dl.time[i]}: ${Math.round(dl.temperature_2m_min[i])}–${Math.round(dl.temperature_2m_max[i])}°C, ${WMO[dl.weather_code[i]] || "?"}, yağış olasılığı %${dl.precipitation_probability_max[i] ?? 0}, rüzgâr en çok ${Math.round(dl.wind_speed_10m_max[i])} km/sa`);
+    }
+  }
+  return lines.length > 1 ? lines.join("\n") : null;
+}
+
+// --- Haberler (RSS başlıkları; özetini model yapar) ---
+const NEWS_FEEDS = [
+  { area: "Türkiye", url: "https://www.ntv.com.tr/gundem.rss" },
+  { area: "Türkiye", url: "https://www.aa.com.tr/tr/rss/default?cat=guncel" },
+  { area: "Dünya", url: "https://feeds.bbci.co.uk/turkce/rss.xml" },
+  { area: "Dünya", url: "https://feeds.bbci.co.uk/news/world/rss.xml" }
+];
+
+function wantsNews(text) {
+  return /(haber|gündem|günaydın|sabah özet|brifing|manşet|dünyada ne|türkiye'de ne|neler oluyor|son dakika)/i
+    .test(text.toLocaleLowerCase("tr-TR"));
+}
+
+const decodeEntities = (s) => s
+  .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+  .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+  .replace(/<[^>]+>/g, "")                       // (kaçışlı olanlar dahil) HTML etiketlerini at
+  .replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'")
+  .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+  .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&")
+  .replace(/\s+/g, " ").trim();
+
+function parseRss(xml, limit = 6) {
+  const out = [];
+  // RSS <item> ya da Atom <entry> (NTV Atom kullanır)
+  const items = xml.match(/<item[\s>][\s\S]*?<\/item>/g) || xml.match(/<entry[\s>][\s\S]*?<\/entry>/g) || [];
+  for (const item of items) {
+    const title = decodeEntities(item.match(/<title[^>]*>([\s\S]*?)<\/title>/)?.[1] || "");
+    if (!title) continue;
+    const rawDesc = item.match(/<(description|summary)[^>]*>([\s\S]*?)<\/\1>/)?.[2] || "";
+    const desc = decodeEntities(rawDesc).slice(0, 160);
+    out.push(desc && !desc.startsWith(title) ? `${title} — ${desc}` : title);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+async function getNews() {
+  const results = await Promise.allSettled(NEWS_FEEDS.map(async (f) => {
+    const res = await fetchWithTimeout(f.url, 3500, { headers: { "user-agent": "Mozilla/5.0 JarvisAssistant" } });
+    if (!res.ok) return null;
+    return { area: f.area, items: parseRss(await res.text(), f.area === "Türkiye" ? 6 : 5) };
+  }));
+  const byArea = { "Türkiye": [], "Dünya": [] };
+  for (const r of results) {
+    if (r.status === "fulfilled" && r.value) byArea[r.value.area].push(...r.value.items);
+  }
+  if (!byArea["Türkiye"].length && !byArea["Dünya"].length) return null;
+  const lines = ["HABERLER (son başlıklar; tarafsız özetle, uydurma):"];
+  for (const area of ["Türkiye", "Dünya"]) {
+    const seen = new Set();
+    const items = byArea[area].filter((t) => { const k = t.slice(0, 40).toLocaleLowerCase("tr-TR"); if (seen.has(k)) return false; seen.add(k); return true; }).slice(0, 10);
+    if (items.length) {
+      lines.push(`  ${area}:`);
+      items.forEach((t) => lines.push("   - " + t));
+    }
+  }
+  return lines.join("\n");
 }
 
 // --- Ses (metni doğal sese çevirir) ---

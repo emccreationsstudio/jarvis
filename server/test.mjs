@@ -6,7 +6,36 @@ const env = { OPENAI_API_KEY: "sk-test", APP_TOKEN: "gizli123" };
 let lastPayload = null;
 let fakeReply = null;
 
-globalThis.fetch = async (url, init) => {
+const FAKE_WEATHER = {
+  current: { time: "2026-10-04T09:00", temperature_2m: 17.4, apparent_temperature: 16.1, weather_code: 61, wind_speed_10m: 22, precipitation: 0.4 },
+  hourly: {
+    time: ["2026-10-04T09:00", "2026-10-04T12:00", "2026-10-04T15:00", "2026-10-04T18:00", "2026-10-05T09:00"],
+    temperature_2m: [17, 19, 20, 18, 15], precipitation_probability: [70, 40, 10, 0, 5], weather_code: [61, 3, 2, 1, 0]
+  },
+  daily: {
+    time: ["2026-10-04", "2026-10-05"], weather_code: [61, 0], temperature_2m_max: [20, 22], temperature_2m_min: [14, 13],
+    precipitation_probability_max: [70, 5], wind_speed_10m_max: [30, 12]
+  }
+};
+const FAKE_RSS = `<?xml version="1.0"?><rss><channel><title>Kanal</title>
+<item><title><![CDATA[Meclis yeni yasayı kabul etti]]></title><description><![CDATA[<p>Ayrıntılar &amp; tepkiler</p>]]></description></item>
+<item><title>İstanbul&#39;da trafik düzenlemesi</title></item>
+</channel></rss>`;
+const FAKE_ATOM = `<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><title>NTV</title>
+<entry><title type="html">Ankara'da kritik toplantı</title><summary type="html">&lt;p&gt;Gündem yoğun&lt;/p&gt;</summary></entry></feed>`;
+let weatherCalls = 0, newsCalls = 0, failExternal = false;
+
+globalThis.fetch = async (url, init = {}) => {
+  if (String(url).startsWith("https://api.open-meteo.com/")) {
+    weatherCalls++;
+    if (failExternal) throw new Error("ağ yok");
+    return new Response(JSON.stringify(FAKE_WEATHER), { status: 200 });
+  }
+  if (/ntv|aa\.com|bbci/.test(String(url))) {
+    newsCalls++;
+    if (failExternal) return new Response("x", { status: 503 });
+    return new Response(String(url).includes("ntv") ? FAKE_ATOM : FAKE_RSS, { status: 200 });
+  }
   assert.equal(url, "https://api.openai.com/v1/responses");
   assert.equal(init.headers.authorization, "Bearer sk-test");
   lastPayload = JSON.parse(init.body);
@@ -196,6 +225,87 @@ await test("sync: KV yoksa 501, varsa yaz/oku, eski veri 409", async () => {
   assert.equal(old.status, 409);
   assert.equal((await old.json()).data.tasks.length, 1);
   assert.equal((await worker.fetch(req("/sync", null, "yanlis", "GET"), e2)).status, 401);
+});
+
+const blank = { title: null, items: [], due: null, end: null, priority: null, person: null, origin: null, destination: null, location: null, note: null, target_id: null };
+
+await test("yeni işlem türleri geçiyor (listeler, takvim düzenleme, harita, mesaj, arama)", async () => {
+  const types = ["check_shopping", "reopen_task", "create_list", "add_list_items", "check_list_items", "remove_list_items",
+    "delete_list", "update_event", "delete_event", "open_maps", "send_message", "call_now"];
+  fakeReply = { reply: "Tamam.", actions: types.map((type) => ({ ...blank, type })) };
+  const body = await (await worker.fetch(req("/chat", { message: "x" }), env)).json();
+  assert.deepEqual(body.actions.map((a) => a.type), types);
+  const schemaTypes = lastPayload.text.format.schema.properties.actions.items.properties.type.enum;
+  types.forEach((t) => assert.ok(schemaTypes.includes(t), t));
+});
+
+await test("hava durumu bağlama ekleniyor, konum yoksa İstanbul", async () => {
+  fakeReply = { reply: "Şemsiye al.", actions: [] };
+  weatherCalls = 0;
+  await worker.fetch(req("/chat", { message: "yarın ne giysem", context: { now: "2026-10-04 Pazar 09:10" } }), env);
+  assert.equal(weatherCalls, 1);
+  const last = lastPayload.input.at(-1).content;
+  assert.ok(last.includes("HAVA DURUMU (İstanbul)"), last);
+  assert.ok(last.includes("Şu an: 17°C"));
+  assert.ok(last.includes("09:00 17° hafif yağmur yağış %70"));
+  assert.ok(last.includes("2026-10-05: 13–22°C, açık"));
+  assert.ok(!last.includes("HABERLER"), "haber istenmedi");
+});
+
+await test("konum verilirse o konum kullanılıyor", async () => {
+  let asked = null;
+  const saved = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes("open-meteo")) { asked = String(url); return new Response(JSON.stringify(FAKE_WEATHER)); }
+    return saved(url, init);
+  };
+  await worker.fetch(req("/chat", { message: "hava nasıl", context: { location: { lat: 40.99, lon: 29.03 } } }), env);
+  globalThis.fetch = saved;
+  assert.ok(asked.includes("latitude=40.99&longitude=29.03"), asked);
+  assert.ok(lastPayload.input.at(-1).content.includes("HAVA DURUMU (bulunduğun yer)"));
+});
+
+await test("sabah özeti: haber başlıkları ekleniyor", async () => {
+  fakeReply = { reply: "Günaydın.", actions: [] };
+  newsCalls = 0;
+  await worker.fetch(req("/chat", { message: "Günaydın Jarvis, sabah özetimi ver" }), env);
+  assert.equal(newsCalls, 4);
+  const last = lastPayload.input.at(-1).content;
+  assert.ok(last.includes("HABERLER"));
+  assert.ok(last.includes("  Türkiye:"));
+  assert.ok(last.includes("Meclis yeni yasayı kabul etti — Ayrıntılar & tepkiler"), last);
+  assert.ok(last.includes("İstanbul'da trafik düzenlemesi"));
+  assert.ok(last.includes("Ankara'da kritik toplantı — Gündem yoğun"), "Atom beslemesi okunmalı");
+});
+
+await test("hava/haber alınamazsa sohbet yine çalışıyor", async () => {
+  failExternal = true;
+  fakeReply = { reply: "Haberlere şu an ulaşamıyorum.", actions: [] };
+  const r = await worker.fetch(req("/chat", { message: "haberler ne" }), env);
+  failExternal = false;
+  assert.equal(r.status, 200);
+  const last = lastPayload.input.at(-1).content;
+  assert.ok(!last.includes("HAVA DURUMU") && !last.includes("HABERLER"));
+});
+
+await test("sesli mesaj işaretleniyor, listeler ve takvim id'leri bağlamda", async () => {
+  fakeReply = { reply: "Tamam.", actions: [] };
+  await worker.fetch(req("/chat", {
+    message: "eczane listesine parol ekle", voice: true,
+    context: {
+      lists: [{ id: "l1", name: "Eczane", daily: false, items: ["Vitamin"], done: ["Krem"] }, { id: "l2", name: "Günlük ilaçlar", daily: true, items: [], done: [] }],
+      events: [{ id: "E1", start: "2026-10-05T10:00", end: "2026-10-05T11:00", title: "Dişçi", location: "Kadıköy" }]
+    }
+  }), env);
+  const last = lastPayload.input.at(-1).content;
+  assert.ok(last.includes("SESLİ: evet\nKULLANICI: eczane listesine parol ekle"));
+  assert.ok(last.includes("[id:l1] Eczane: Vitamin | işaretli: Krem"));
+  assert.ok(last.includes("[id:l2] Günlük ilaçlar (günlük): (boş)"));
+  assert.ok(last.includes("[id:E1] 2026-10-05T10:00–2026-10-05T11:00 Dişçi @ Kadıköy"));
+  assert.ok(lastPayload.instructions.includes("rakamla"));
+  // yazılı mesajda işaret yok
+  await worker.fetch(req("/chat", { message: "selam" }), env);
+  assert.ok(!lastPayload.input.at(-1).content.includes("SESLİ"));
 });
 
 console.log(`\n${n} test geçti`);
