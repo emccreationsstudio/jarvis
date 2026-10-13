@@ -107,7 +107,7 @@ enum Launcher {
             return "Komutu bilgisayara iletemedim; sunucuda bilgisayar kuyruğu kurulu olmayabilir."
         }
         guard let resultURL = URL(string: root + "/pc/result?id=" + id) else { return "" }
-        for _ in 0..<15 {
+        for _ in 0..<7 {
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             var r = URLRequest(url: resultURL, timeoutInterval: 10)
             r.setValue("Bearer \(s.1)", forHTTPHeaderField: "Authorization")

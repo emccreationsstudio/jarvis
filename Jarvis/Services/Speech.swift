@@ -31,7 +31,7 @@ final class SpeechService: NSObject, ObservableObject {
     var vocabulary: [String] = []
 
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "tr-TR"))
-    private let engine = AVAudioEngine()
+    private var engine = AVAudioEngine()
     private let sink = BufferSink()
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var recogTask: SFSpeechRecognitionTask?
@@ -77,8 +77,15 @@ final class SpeechService: NSObject, ObservableObject {
                                     options: [.duckOthers, .defaultToSpeaker, .allowBluetoothA2DP])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
 
+            // Ses modu (normal / yankı engellemeli) değişince eski motorun biçimi tutmaz → her seferinde yeni motor
+            if engine.isRunning { engine.stop() }
+            engine.inputNode.removeTap(onBus: 0)
+            engine = AVAudioEngine()
             let input = engine.inputNode
             let format = input.outputFormat(forBus: 0)
+            guard format.sampleRate > 0, format.channelCount > 0 else {
+                throw NSError(domain: "Jarvis", code: 1, userInfo: [NSLocalizedDescriptionKey: "Mikrofon biçimi alınamadı"])
+            }
             input.removeTap(onBus: 0)
             let sink = self.sink
             input.installTap(onBus: 0, bufferSize: 1024, format: format) { @Sendable [weak self] buffer, _ in
