@@ -208,29 +208,6 @@ struct MemoryNote: Codable, Identifiable, Equatable {
     var createdAt: Date = Date()
 }
 
-/// Bilgi bankası: kullanıcının kendisi, stüdyosu, şirketi ve projeleri hakkında uzun notlar.
-/// Bilgisayardaki Jarvis'in data/bilgi klasörüyle eşitlenir.
-struct KnowledgeDoc: Codable, Identifiable, Equatable {
-    var id: String = UUID().uuidString
-    var title: String
-    var category: String = "genel"
-    var importance: String = "normal"
-    var content: String
-    var updatedAt: Date = Date()
-}
-
-extension KnowledgeDoc {
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
-        title = try c.decodeIfPresent(String.self, forKey: .title) ?? "Not"
-        category = try c.decodeIfPresent(String.self, forKey: .category) ?? "genel"
-        importance = try c.decodeIfPresent(String.self, forKey: .importance) ?? "normal"
-        content = try c.decodeIfPresent(String.self, forKey: .content) ?? ""
-        updatedAt = (try? c.decodeIfPresent(Date.self, forKey: .updatedAt)) ?? Date()
-    }
-}
-
 struct ChatMessage: Codable, Identifiable, Equatable {
     enum Role: String, Codable { case user, assistant }
     var id: String = UUID().uuidString
@@ -254,7 +231,6 @@ struct ChatRequest: Encodable {
         struct SD: Encodable { let id: String; let title: String; let person: String?; let kind: String; let next: String; let years: Int? }
         struct H: Encodable { let date: String; let title: String }
         struct MO: Encodable { let date: String; let title: String; let place: String?; let note: String? }
-        struct K: Encodable { let title: String; let category: String; let importance: String; let content: String }
         let now: String
         let timezone: String
         let userName: String
@@ -270,16 +246,12 @@ struct ChatRequest: Encodable {
         let lists: [L]
         /// Hava durumu için yaklaşık konum (izin varsa)
         let location: Loc?
-        /// Bilgi bankası (kendisi, Freestage, EMC, projeler…)
-        var knowledge: [K] = []
     }
     let message: String
     let history: [HistoryItem]
     let context: Context
     /// Mesaj sesle mi söylendi (sunucu yanlış duyulmuş sözcükleri düzeltmeye çalışır)
     var voice: Bool = false
-    /// Sohbete eklenen resimler (data:image/jpeg;base64,…) — en fazla 3
-    var images: [String] = []
 }
 
 struct ChatResponse: Decodable {

@@ -288,15 +288,13 @@ final class Assistant: ObservableObject {
 
     // MARK: Gönder
 
-    func send(_ raw: String, voice: Bool = false, images: [String] = []) {
-        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.isEmpty && !images.isEmpty { text = "Bu resme bak ve ne gördüğünü söyle." }
+    func send(_ raw: String, voice: Bool = false) {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         errorText = nil
         lastRoute = nil
         inflight?.cancel()
-        let shown = images.isEmpty ? text : "📎 \(images.count) resim · " + text
-        let message = ChatMessage(role: .user, text: shown)
+        let message = ChatMessage(role: .user, text: text)
         store.messages.append(message)
         if conversing { idleTask?.cancel() }   // mikrofon açık kalır: araya girilebilir
 
@@ -311,7 +309,7 @@ final class Assistant: ObservableObject {
         inflight = Task { [weak self] in
             guard let self else { return }
             do {
-                let response = try await self.request(text, voice: voice, images: images)
+                let response = try await self.request(text, voice: voice)
                 guard !Task.isCancelled else { return }
                 self.inflightText = nil
                 self.inflightMessageID = nil
@@ -337,9 +335,7 @@ final class Assistant: ObservableObject {
             if conversing { speech.stopMic() }   // Jarvis konuşurken kendini duymasın
             phase = .speaking
             // "Jarvis kapan" denmişse uzun cevap okunmaz; yalnızca "Kapanıyorum" der (cevap ekranda kalır)
-            let spoken = closeAfterReply ? "Kapanıyorum." : text
-            // Konuşurken susturmak için reaktöre dokunmak yeterli
-            speech.speak(spoken) { [weak self] in self?.afterReply() }
+            speech.speak(closeAfterReply ? "Kapanıyorum." : text) { [weak self] in self?.afterReply() }
         } else {
             afterReply()
         }
@@ -363,7 +359,7 @@ final class Assistant: ObservableObject {
         var errorDescription: String? { message }
     }
 
-    private func request(_ text: String, voice: Bool = false, images: [String] = []) async throws -> ChatResponse {
+    private func request(_ text: String, voice: Bool = false) async throws -> ChatResponse {
         let base = settings.serverURL.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let url = URL(string: base + "/chat") else { throw ServerError(message: "Sunucu adresi geçersiz.") }
 
@@ -371,10 +367,9 @@ final class Assistant: ObservableObject {
         let today = Calendar.current.startOfDay(for: Date())
         let history = store.messages.dropLast().filter { $0.date >= today }.suffix(12)
             .map { ChatRequest.HistoryItem(role: $0.role.rawValue, content: $0.text) }
-        var body = ChatRequest(message: text, history: Array(history), context: context(), voice: voice)
-        body.images = Array(images.prefix(3))
+        let body = ChatRequest(message: text, history: Array(history), context: context(), voice: voice)
 
-        var req = URLRequest(url: url, timeoutInterval: images.isEmpty ? 60 : 90)
+        var req = URLRequest(url: url, timeoutInterval: 60)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("Bearer \(settings.token)", forHTTPHeaderField: "Authorization")
@@ -406,7 +401,7 @@ final class Assistant: ObservableObject {
             ChatRequest.Context.E(id: $0.id, start: wire.string(from: $0.start), end: $0.end.map { wire.string(from: $0) }, title: $0.title, location: $0.location)
         }
         let loc = RouteService.shared.approximateCoordinate().map { ChatRequest.Context.Loc(lat: $0.lat, lon: $0.lon) }
-        var ctx = ChatRequest.Context(
+        return ChatRequest.Context(
             now: DateText.now.string(from: Date()),
             timezone: TimeZone.current.identifier,
             userName: settings.userName,
@@ -434,10 +429,6 @@ final class Assistant: ObservableObject {
             },
             location: loc
         )
-        ctx.knowledge = store.knowledge.map {
-            ChatRequest.Context.K(title: $0.title, category: $0.category, importance: $0.importance, content: String($0.content.prefix(4000)))
-        }
-        return ctx
     }
 
     /// Konuşma tanımaya ipucu: sık geçen özel adlar
@@ -608,43 +599,6 @@ final class Assistant: ObservableObject {
         case "add_moment":
             guard let title = a.title, !title.isEmpty else { return nil }
             store.addMoment(Moment(title: title, date: DateText.parseDay(a.due) ?? Date(), place: a.location, note: a.note))
-            return nil
-
-        case "open_app":
-            guard let target = a.title ?? a.destination, !target.isEmpty else { return nil }
-            let ok = await Launcher.open(target)
-            return ok ? nil : "\(target) telefonda açılamadı; yüklü olmayabilir."
-
-        case "open_url":
-            guard let q = a.title ?? a.note, !q.isEmpty else { return nil }
-            let ok: Bool
-            if q.contains(".") && !q.contains(" ") {
-                ok = await Launcher.open(q.contains("://") ? q : "https://" + q)
-            } else {
-                ok = await Launcher.search(q)
-            }
-            return ok ? nil : "Sayfayı açamadım."
-
-        case "run_shortcut":
-            guard let name = a.title, !name.isEmpty else { return nil }
-            let ok = await Launcher.runShortcut(name, input: a.note)
-            return ok ? nil : "Kısayolu çalıştıramadım; Kısayollar uygulamasında \(name) adında bir kısayol olmalı."
-
-        case "pc_command":
-            guard let cmd = a.note ?? a.title, !cmd.isEmpty else { return nil }
-            return await Launcher.sendToPC(cmd)
-
-        case "save_knowledge":
-            guard let title = a.title, !title.isEmpty, let content = a.note, !content.isEmpty else { return nil }
-            let importance: String? = {
-                switch a.priority { case "critical", "high": return "yüksek"; case "low": return "düşük"; case "normal": return "normal"; default: return nil }
-            }()
-            store.saveKnowledge(title: title, content: content, importance: importance,
-                                category: a.location, replace: (a.items ?? []).contains("replace"))
-            return nil
-
-        case "delete_knowledge":
-            store.deleteKnowledge(title: a.title)
             return nil
 
         case "show_calendar":
