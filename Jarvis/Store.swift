@@ -17,6 +17,8 @@ final class Store: ObservableObject {
     @Published var lists: [CustomList] = [] { didSet { save() } }
     /// Silinenler — 30 gün geri alınabilir
     @Published var trash: [TrashEntry] = [] { didSet { save() } }
+    /// Bilgi bankası (bilgisayarla eşitlenir)
+    @Published var knowledge: [KnowledgeDoc] = [] { didSet { save() } }
 
     /// Diskte ve eşitlemede kullanılan tek veri biçimi (bilgisayar uygulaması da aynısını kullanır)
     struct Snapshot: Codable {
@@ -30,6 +32,7 @@ final class Store: ObservableObject {
         var moments: [Moment]?
         var lists: [CustomList]?
         var trash: [TrashEntry]?
+        var knowledge: [KnowledgeDoc]?
         var updatedAt: Date?
     }
 
@@ -61,7 +64,7 @@ final class Store: ObservableObject {
     var snapshot: Snapshot {
         Snapshot(tasks: tasks, shopping: shopping, calls: calls, memory: memory,
                  messages: Array(messages.suffix(300)), specials: specials, moments: moments,
-                 lists: lists, trash: trash, updatedAt: updatedAt)
+                 lists: lists, trash: trash, knowledge: knowledge, updatedAt: updatedAt)
     }
 
     /// Eşitlemeden gelen daha yeni veriyi uygula (hatırlatmaları da günceller)
@@ -87,6 +90,7 @@ final class Store: ObservableObject {
         // Eski bilgisayar uygulaması bu alanları göndermez → o zaman buradakini koru
         lists = snap.lists ?? lists
         trash = snap.trash ?? trash
+        knowledge = snap.knowledge ?? knowledge
         updatedAt = remoteDate
 
         // Yalnızca değişen hatırlatmaları yeniden kur
@@ -127,6 +131,7 @@ final class Store: ObservableObject {
         moments = snap.moments ?? []
         lists = snap.lists ?? []
         trash = snap.trash ?? []
+        knowledge = snap.knowledge ?? []
         updatedAt = snap.updatedAt ?? .distantPast
     }
 
@@ -362,6 +367,40 @@ final class Store: ObservableObject {
         memory.removeAll { $0.id == id }
     }
 
+    // MARK: Bilgi bankası
+
+    private static func kbKey(_ s: String) -> String {
+        s.lowercased(with: Locale(identifier: "tr_TR")).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func knowledgeDoc(titled title: String?) -> KnowledgeDoc? {
+        guard let title, !title.isEmpty else { return nil }
+        let k = Self.kbKey(title)
+        return knowledge.first { Self.kbKey($0.title) == k }
+            ?? knowledge.first { Self.kbKey($0.title).contains(k) || k.contains(Self.kbKey($0.title)) }
+    }
+
+    /// Bilgi ekler; aynı başlık varsa sonuna ekler (replace: true ise değiştirir)
+    func saveKnowledge(title: String, content: String, importance: String? = nil, category: String? = nil, replace: Bool = false) {
+        let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        if let old = knowledgeDoc(titled: title), let i = knowledge.firstIndex(where: { $0.id == old.id }) {
+            var d = knowledge[i]
+            d.content = replace ? text : (d.content.isEmpty ? text : d.content + "\n" + text)
+            if let importance { d.importance = importance }
+            if let category, !category.isEmpty { d.category = category }
+            d.updatedAt = Date()
+            knowledge[i] = d
+        } else {
+            knowledge.append(KnowledgeDoc(title: title, category: category ?? "genel", importance: importance ?? "normal", content: text))
+        }
+    }
+
+    func deleteKnowledge(title: String?) {
+        guard let d = knowledgeDoc(titled: title) else { return }
+        knowledge.removeAll { $0.id == d.id }
+    }
+
     // MARK: Kullanıcının listeleri
 
     /// Ada göre listeyi bul ("eczane" → "Eczane", "ilaç listem" → "Günlük ilaçlar" gibi gevşek)
@@ -592,6 +631,10 @@ final class AppSettings: ObservableObject {
     @Published var morningBriefMinutes: Int { didSet { UserDefaults.standard.set(morningBriefMinutes, forKey: "morningBriefMinutes"); Reminders.shared.scheduleMorningBrief() } }
     /// Yol tarifinde açılacak harita: apple · google · yandex
     @Published var mapsApp: String { didSet { UserDefaults.standard.set(mapsApp, forKey: "mapsApp") } }
+    /// Jarvis konuşurken "Jarvis" deyince susup dinlesin
+    @Published var bargeIn: Bool { didSet { UserDefaults.standard.set(bargeIn, forKey: "bargeIn") } }
+    /// Sıcak, alçak ve yumuşak kadın tonu
+    @Published var voiceWarm: Bool { didSet { UserDefaults.standard.set(voiceWarm, forKey: "voiceWarm") } }
 
     private init() {
         let d = UserDefaults.standard
@@ -603,13 +646,15 @@ final class AppSettings: ObservableObject {
         alarmAll = d.object(forKey: "alarmAll") as? Bool ?? true
         syncEnabled = d.bool(forKey: "syncEnabled")
         naturalVoice = d.object(forKey: "naturalVoice") as? Bool ?? true
-        voiceFemale = d.object(forKey: "voiceFemale") as? Bool ?? false
+        voiceFemale = d.object(forKey: "voiceFemale") as? Bool ?? true
         voiceTone = d.object(forKey: "voiceTone") as? Double ?? 0
         voiceSpeed = d.object(forKey: "voiceSpeed") as? Double ?? 1.05
         cloudRecognition = d.object(forKey: "cloudRecognition") as? Bool ?? true
         morningBrief = d.object(forKey: "morningBrief") as? Bool ?? false
         morningBriefMinutes = d.object(forKey: "morningBriefMinutes") as? Int ?? 8 * 60
         mapsApp = d.string(forKey: "mapsApp") ?? "apple"
+        bargeIn = d.object(forKey: "bargeIn") as? Bool ?? true
+        voiceWarm = d.bool(forKey: "voiceWarm")
         token = Keychain.get("appToken") ?? ""
     }
 
