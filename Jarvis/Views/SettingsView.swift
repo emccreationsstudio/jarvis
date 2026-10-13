@@ -191,13 +191,6 @@ struct SettingsView: View {
                             }
                         }
                         Toggle("Cevapları sesli oku", isOn: $settings.speakReplies)
-                        Toggle(isOn: $settings.bargeIn) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("\"Jarvis\" deyince sus")
-                                Text("Sohbet açıkken Jarvis konuşurken \"Jarvis\" dersen susar, \"Evet efendim, dinliyorum\" der ve seni dinler.")
-                                    .font(.caption2).foregroundStyle(.white.opacity(0.5))
-                            }
-                        }
                         Toggle(isOn: $settings.cloudRecognition) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Gelişmiş konuşma tanıma")
