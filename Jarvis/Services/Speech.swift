@@ -42,6 +42,10 @@ final class SpeechService: NSObject, ObservableObject {
     private let synth = AVSpeechSynthesizer()
     private var speakDone: (() -> Void)?
 
+    /// Jarvis konuşurken yalnızca "Jarvis" sözcüğünü dinleyen mod (araya girmek için)
+    private(set) var spotting = false
+    private var onWake: (() -> Void)?
+
     override init() {
         super.init()
         synth.delegate = self
@@ -61,14 +65,16 @@ final class SpeechService: NSObject, ObservableObject {
 
     /// Mikrofonu açar. Her duraksamada `onSegment` söylenen cümleyle çağrılır.
     @discardableResult
-    func startMic(onSegment: @escaping (String) -> Void) -> Bool {
+    func startMic(voiceChat: Bool = false, onSegment: @escaping (String) -> Void) -> Bool {
         self.onSegment = onSegment
         guard !isListening else { return true }
         guard let recognizer, recognizer.isAvailable else { return false }
 
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .defaultToSpeaker, .allowBluetoothA2DP])
+            // voiceChat: yankı engelleme açık — Jarvis konuşurken kendi sesini daha az duyar
+            try session.setCategory(.playAndRecord, mode: voiceChat ? .voiceChat : .default,
+                                    options: [.duckOthers, .defaultToSpeaker, .allowBluetoothA2DP])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
 
             let input = engine.inputNode
@@ -149,6 +155,21 @@ final class SpeechService: NSObject, ObservableObject {
 
     private func handle(gen: Int, text: String?, isFinal: Bool, failed: Bool) {
         guard gen == generation, isListening else { return }
+        if spotting {
+            if let text, Self.containsWake(text) {
+                let cb = onWake
+                stopWakeSpotter()
+                cb?()
+            } else if isFinal || failed {
+                let g = generation
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                    guard let self, self.spotting, self.isListening, self.generation == g else { return }
+                    self.startRecognition()
+                }
+            }
+            return
+        }
         if failed && (text ?? "").isEmpty { serverRecognitionFailures += 1 }
         if let text, !text.isEmpty { serverRecognitionFailures = 0 }
         if let text, text != partialText {
@@ -184,6 +205,50 @@ final class SpeechService: NSObject, ObservableObject {
         if !text.isEmpty { onSegment?(text) }
     }
 
+    // MARK: Konuşurken "Jarvis" ile araya girme
+
+    nonisolated static func containsWake(_ text: String) -> Bool {
+        let t = text.lowercased(with: Locale(identifier: "tr_TR"))
+        return ["jarvis", "carvis", "çarvis", "cervis", "jervis", "jarvıs", "çervis", "carviz", "jarviz", "şarvis"]
+            .contains { t.contains($0) }
+    }
+
+    /// Konuşma sürerken mikrofonu yalnızca "Jarvis" için dinler. Duyunca `onWake` çağrılır.
+    func startWakeSpotter(onWake: @escaping () -> Void) {
+        guard !isListening else { return }
+        self.onWake = onWake
+        spotting = true
+        if !startMic(voiceChat: true, onSegment: { _ in }) {
+            spotting = false
+            self.onWake = nil
+        }
+    }
+
+    func stopWakeSpotter() {
+        guard spotting else { return }
+        spotting = false
+        onWake = nil
+        stopMic()
+    }
+
+    /// Konuşmayı keser ama tamamlama çağrılmaz ("Jarvis" ile araya girildi; akışı çağıran yönetir)
+    func interruptSpeaking() {
+        stopWakeSpotter()
+        haltAudio()
+        isSpeaking = false
+        speakDone = nil
+    }
+
+    /// Kısa söylenişler uzatılmasın: "Tabi" → "Tabii"
+    nonisolated static func fixPronunciation(_ text: String) -> String {
+        var s = text
+        for (a, b) in [("Tabi ", "Tabii "), ("tabi ", "tabii "), ("Tabi,", "Tabii,"), ("tabi,", "tabii,"), ("Tabi.", "Tabii."), ("tabi.", "tabii.")] {
+            s = s.replacingOccurrences(of: a, with: b)
+        }
+        if s == "Tabi" || s == "tabi" { s += "i" }
+        return s
+    }
+
     nonisolated static func rms(_ buffer: AVAudioPCMBuffer) -> Float {
         guard let data = buffer.floatChannelData?[0] else { return 0 }
         let n = Int(buffer.frameLength)
@@ -203,14 +268,18 @@ final class SpeechService: NSObject, ObservableObject {
     private var queueTexts: [String] = []
     private var playTask: Task<Void, Never>?
 
-    func speak(_ text: String, completion: (() -> Void)? = nil) {
+    func speak(_ text: String, keepMic: Bool = false, completion: (() -> Void)? = nil) {
         speakDone = nil          // önceki konuşmanın devamı tetiklenmesin
         haltAudio()
-        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let clean = Self.fixPronunciation(text.trimmingCharacters(in: .whitespacesAndNewlines))
         guard !clean.isEmpty else { completion?(); return }
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
+            if keepMic || isListening {
+                try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.duckOthers, .defaultToSpeaker, .allowBluetoothA2DP])
+            } else {
+                try session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
+            }
             try session.setActive(true)
         } catch {}
         speakDone = completion
@@ -221,9 +290,10 @@ final class SpeechService: NSObject, ObservableObject {
 
         let chunks = Self.chunks(clean)
         let voice = s.voiceName, speed = s.voiceSpeed, base = s.serverURL, token = s.token
+        let style = s.voiceWarm ? "warm" : "classic"
         queueTexts = chunks
         queue = chunks.map { chunk in
-            Task.detached { await SpeechService.fetchTTS(chunk, voice: voice, speed: speed, base: base, token: token) }
+            Task.detached { await SpeechService.fetchTTS(chunk, voice: voice, speed: speed, style: style, base: base, token: token) }
         }
         playTask = Task { [weak self] in await self?.playQueue() }
     }
@@ -262,6 +332,7 @@ final class SpeechService: NSObject, ObservableObject {
 
     fileprivate func finishSpeaking() {
         guard isSpeaking else { return }
+        stopWakeSpotter()
         isSpeaking = false
         player = nil
         queue = []
@@ -283,6 +354,7 @@ final class SpeechService: NSObject, ObservableObject {
     /// Konuşmayı keser. Bekleyen tamamlama yine çağrılır (akış devam etsin diye).
     func stopSpeaking() {
         guard isSpeaking || synth.isSpeaking || player != nil else { return }
+        stopWakeSpotter()
         haltAudio()
         isSpeaking = false
         let cb = speakDone
@@ -307,14 +379,14 @@ final class SpeechService: NSObject, ObservableObject {
         return out
     }
 
-    nonisolated static func fetchTTS(_ text: String, voice: String, speed: Double, base: String, token: String) async -> Data? {
+    nonisolated static func fetchTTS(_ text: String, voice: String, speed: Double, style: String = "classic", base: String, token: String) async -> Data? {
         let root = base.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let url = URL(string: root + "/tts") else { return nil }
         var req = URLRequest(url: url, timeoutInterval: 20)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        let payload: [String: Any] = ["text": text, "voice": voice, "speed": speed]
+        let payload: [String: Any] = ["text": text, "voice": voice, "speed": speed, "style": style]
         req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
         guard let result = try? await URLSession.shared.data(for: req) else { return nil }
         guard (result.1 as? HTTPURLResponse)?.statusCode == 200, !result.0.isEmpty else { return nil }
