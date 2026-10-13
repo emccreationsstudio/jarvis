@@ -644,7 +644,7 @@ final class AppSettings: ObservableObject {
         speakReplies = d.object(forKey: "speakReplies") as? Bool ?? true
         autoListen = d.object(forKey: "autoListen") as? Bool ?? true
         alarmAll = d.object(forKey: "alarmAll") as? Bool ?? true
-        syncEnabled = d.bool(forKey: "syncEnabled")
+        syncEnabled = d.object(forKey: "syncEnabled") as? Bool ?? true
         naturalVoice = d.object(forKey: "naturalVoice") as? Bool ?? true
         voiceFemale = d.object(forKey: "voiceFemale") as? Bool ?? true
         voiceTone = d.object(forKey: "voiceTone") as? Double ?? 0
