@@ -80,6 +80,7 @@ struct MemoryView: View {
 struct SettingsView: View {
     @EnvironmentObject var settings: AppSettings
     @EnvironmentObject var assistant: Assistant
+    @ObservedObject private var kbStore = Store.shared
     @State private var testResult: String?
     @State private var testing = false
     @State private var alarmResult: String?
@@ -100,7 +101,9 @@ struct SettingsView: View {
         case ..<0.93: return "Yavaş"
         case ..<1.12: return "Normal"
         case ..<1.27: return "Hızlı"
-        default: return "Çok hızlı"
+        case ..<1.42: return "Çok hızlı"
+        case ..<1.57: return "Süper hızlı"
+        default: return "Jet"
         }
     }
 
@@ -151,6 +154,15 @@ struct SettingsView: View {
                                 Text("Kadın").tag(true)
                             }
                             .pickerStyle(.segmented)
+                            if settings.voiceFemale {
+                                Toggle(isOn: $settings.voiceWarm) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Sıcak ton")
+                                        Text("Daha alçak, yumuşak ve sıcak bir kadın sesi.")
+                                            .font(.caption2).foregroundStyle(.white.opacity(0.5))
+                                    }
+                                }
+                            }
                         }
                         Group {
                             VStack(alignment: .leading, spacing: 4) {
@@ -174,11 +186,18 @@ struct SettingsView: View {
                             }
                             HStack(spacing: 8) {
                                 Image(systemName: "tortoise.fill").font(.caption).foregroundStyle(.white.opacity(0.5))
-                                Slider(value: $settings.voiceSpeed, in: 0.8...1.4, step: 0.05).tint(Theme.glow)
+                                Slider(value: $settings.voiceSpeed, in: 0.8...1.7, step: 0.05).tint(Theme.glow)
                                 Image(systemName: "hare.fill").font(.caption).foregroundStyle(.white.opacity(0.5))
                             }
                         }
                         Toggle("Cevapları sesli oku", isOn: $settings.speakReplies)
+                        Toggle(isOn: $settings.bargeIn) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("\"Jarvis\" deyince sus")
+                                Text("Sohbet açıkken Jarvis konuşurken \"Jarvis\" dersen susar, \"Evet efendim, dinliyorum\" der ve seni dinler.")
+                                    .font(.caption2).foregroundStyle(.white.opacity(0.5))
+                            }
+                        }
                         Toggle(isOn: $settings.cloudRecognition) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Gelişmiş konuşma tanıma")
@@ -321,6 +340,37 @@ struct SettingsView: View {
                         HUDHeader(text: "Cihazlar arası eşitleme")
                     } footer: {
                         Text("Açıksa görevler, listeler, takvim, özel günler, anılar ve hafıza bilgisayardaki Jarvis ile ortak olur. Kapalıyken her cihaz kendi verisini tutar.")
+                            .font(.caption2).foregroundStyle(.white.opacity(0.4))
+                    }
+                    .glassRow()
+
+                    Section {
+                        if kbStore.knowledge.isEmpty {
+                            Text("Henüz kayıt yok. \"Freestage hakkında şunu kaydet…\" diyerek ekleyebilirsin.")
+                                .font(.footnote).foregroundStyle(.white.opacity(0.6))
+                        } else {
+                            ForEach(kbStore.knowledge.sorted { $0.title < $1.title }) { doc in
+                                DisclosureGroup {
+                                    Text(doc.content).font(.footnote).foregroundStyle(.white.opacity(0.8))
+                                        .textSelection(.enabled)
+                                } label: {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(doc.title)
+                                        Text("\(doc.category) · önem: \(doc.importance)")
+                                            .font(.caption2).foregroundStyle(.white.opacity(0.5))
+                                    }
+                                }
+                                .swipeActions {
+                                    Button(role: .destructive) { kbStore.deleteKnowledge(title: doc.title) } label: {
+                                        Label("Sil", systemImage: "trash")
+                                    }
+                                }
+                            }
+                        }
+                    } header: {
+                        HUDHeader(text: "Bilgi bankası")
+                    } footer: {
+                        Text("Kendin, stüdyon, şirketin ve projelerin hakkında Jarvis'e anlattıkların. Planlarken ve cevap verirken kullanır; bilgisayardaki Jarvis ile ortak.")
                             .font(.caption2).foregroundStyle(.white.opacity(0.4))
                     }
                     .glassRow()
