@@ -31,7 +31,7 @@ final class SpeechService: NSObject, ObservableObject {
     var vocabulary: [String] = []
 
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "tr-TR"))
-    private var engine = AVAudioEngine()
+    private let engine = AVAudioEngine()
     private let sink = BufferSink()
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var recogTask: SFSpeechRecognitionTask?
@@ -41,10 +41,6 @@ final class SpeechService: NSObject, ObservableObject {
 
     private let synth = AVSpeechSynthesizer()
     private var speakDone: (() -> Void)?
-
-    /// Jarvis konuşurken yalnızca "Jarvis" sözcüğünü dinleyen mod (araya girmek için)
-    private(set) var spotting = false
-    private var onWake: (() -> Void)?
 
     override init() {
         super.init()
@@ -65,27 +61,18 @@ final class SpeechService: NSObject, ObservableObject {
 
     /// Mikrofonu açar. Her duraksamada `onSegment` söylenen cümleyle çağrılır.
     @discardableResult
-    func startMic(voiceChat: Bool = false, onSegment: @escaping (String) -> Void) -> Bool {
+    func startMic(onSegment: @escaping (String) -> Void) -> Bool {
         self.onSegment = onSegment
         guard !isListening else { return true }
         guard let recognizer, recognizer.isAvailable else { return false }
 
         do {
             let session = AVAudioSession.sharedInstance()
-            // voiceChat: yankı engelleme açık — Jarvis konuşurken kendi sesini daha az duyar
-            try session.setCategory(.playAndRecord, mode: voiceChat ? .voiceChat : .default,
-                                    options: [.duckOthers, .defaultToSpeaker, .allowBluetoothA2DP])
+            try session.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .defaultToSpeaker, .allowBluetoothA2DP])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
 
-            // Ses modu (normal / yankı engellemeli) değişince eski motorun biçimi tutmaz → her seferinde yeni motor
-            if engine.isRunning { engine.stop() }
-            engine.inputNode.removeTap(onBus: 0)
-            engine = AVAudioEngine()
             let input = engine.inputNode
             let format = input.outputFormat(forBus: 0)
-            guard format.sampleRate > 0, format.channelCount > 0 else {
-                throw NSError(domain: "Jarvis", code: 1, userInfo: [NSLocalizedDescriptionKey: "Mikrofon biçimi alınamadı"])
-            }
             input.removeTap(onBus: 0)
             let sink = self.sink
             input.installTap(onBus: 0, bufferSize: 1024, format: format) { @Sendable [weak self] buffer, _ in
@@ -162,21 +149,6 @@ final class SpeechService: NSObject, ObservableObject {
 
     private func handle(gen: Int, text: String?, isFinal: Bool, failed: Bool) {
         guard gen == generation, isListening else { return }
-        if spotting {
-            if let text, Self.containsWake(text) {
-                let cb = onWake
-                stopWakeSpotter()
-                cb?()
-            } else if isFinal || failed {
-                let g = generation
-                Task { @MainActor [weak self] in
-                    try? await Task.sleep(nanoseconds: 300_000_000)
-                    guard let self, self.spotting, self.isListening, self.generation == g else { return }
-                    self.startRecognition()
-                }
-            }
-            return
-        }
         if failed && (text ?? "").isEmpty { serverRecognitionFailures += 1 }
         if let text, !text.isEmpty { serverRecognitionFailures = 0 }
         if let text, text != partialText {
@@ -212,38 +184,9 @@ final class SpeechService: NSObject, ObservableObject {
         if !text.isEmpty { onSegment?(text) }
     }
 
-    // MARK: Konuşurken "Jarvis" ile araya girme
-
     nonisolated static func containsWake(_ text: String) -> Bool {
         let t = text.lowercased(with: Locale(identifier: "tr_TR"))
-        return ["jarvis", "carvis", "çarvis", "cervis", "jervis", "jarvıs", "çervis", "carviz", "jarviz", "şarvis"]
-            .contains { t.contains($0) }
-    }
-
-    /// Konuşma sürerken mikrofonu yalnızca "Jarvis" için dinler. Duyunca `onWake` çağrılır.
-    func startWakeSpotter(onWake: @escaping () -> Void) {
-        guard !isListening else { return }
-        self.onWake = onWake
-        spotting = true
-        if !startMic(voiceChat: true, onSegment: { _ in }) {
-            spotting = false
-            self.onWake = nil
-        }
-    }
-
-    func stopWakeSpotter() {
-        guard spotting else { return }
-        spotting = false
-        onWake = nil
-        stopMic()
-    }
-
-    /// Konuşmayı keser ama tamamlama çağrılmaz ("Jarvis" ile araya girildi; akışı çağıran yönetir)
-    func interruptSpeaking() {
-        stopWakeSpotter()
-        haltAudio()
-        isSpeaking = false
-        speakDone = nil
+        return ["jarvis", "carvis", "çarvis", "cervis", "jervis", "jarvıs"].contains { t.contains($0) }
     }
 
     /// Kısa söylenişler uzatılmasın: "Tabi" → "Tabii"
@@ -275,18 +218,14 @@ final class SpeechService: NSObject, ObservableObject {
     private var queueTexts: [String] = []
     private var playTask: Task<Void, Never>?
 
-    func speak(_ text: String, keepMic: Bool = false, completion: (() -> Void)? = nil) {
+    func speak(_ text: String, completion: (() -> Void)? = nil) {
         speakDone = nil          // önceki konuşmanın devamı tetiklenmesin
         haltAudio()
         let clean = Self.fixPronunciation(text.trimmingCharacters(in: .whitespacesAndNewlines))
         guard !clean.isEmpty else { completion?(); return }
         do {
             let session = AVAudioSession.sharedInstance()
-            if keepMic || isListening {
-                try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.duckOthers, .defaultToSpeaker, .allowBluetoothA2DP])
-            } else {
-                try session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
-            }
+            try session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
             try session.setActive(true)
         } catch {}
         speakDone = completion
@@ -339,7 +278,6 @@ final class SpeechService: NSObject, ObservableObject {
 
     fileprivate func finishSpeaking() {
         guard isSpeaking else { return }
-        stopWakeSpotter()
         isSpeaking = false
         player = nil
         queue = []
@@ -361,7 +299,6 @@ final class SpeechService: NSObject, ObservableObject {
     /// Konuşmayı keser. Bekleyen tamamlama yine çağrılır (akış devam etsin diye).
     func stopSpeaking() {
         guard isSpeaking || synth.isSpeaking || player != nil else { return }
-        stopWakeSpotter()
         haltAudio()
         isSpeaking = false
         let cb = speakDone
