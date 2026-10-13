@@ -338,25 +338,11 @@ final class Assistant: ObservableObject {
             phase = .speaking
             // "Jarvis kapan" denmişse uzun cevap okunmaz; yalnızca "Kapanıyorum" der (cevap ekranda kalır)
             let spoken = closeAfterReply ? "Kapanıyorum." : text
-            // Konuşurken "Jarvis" denirse susup dinlesin (cevabın kendisi "Jarvis" içermiyorsa)
-            let barge = conversing && !closeAfterReply && settings.bargeIn && !SpeechService.containsWake(spoken)
-            speech.speak(spoken, keepMic: barge) { [weak self] in self?.afterReply() }
-            if barge {
-                speech.startWakeSpotter { [weak self] in self?.wokeDuringSpeech() }
-            }
+            // Konuşurken susturmak için reaktöre dokunmak yeterli
+            speech.speak(spoken) { [weak self] in self?.afterReply() }
         } else {
             afterReply()
         }
-    }
-
-    /// Konuşurken "Jarvis" dendi: sus, "Evet efendim, dinliyorum" de ve dinle
-    private func wokeDuringSpeech() {
-        guard conversing else { return }
-        speech.interruptSpeaking()
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        closeAfterReply = false
-        phase = .speaking
-        speech.speak("Evet efendim, dinliyorum.") { [weak self] in self?.openMic() }
     }
 
     /// Cevap bitti: sohbet sürüyorsa yeniden dinle, "kapan" denmişse kapat.
