@@ -1,6 +1,4 @@
 import SwiftUI
-import PhotosUI
-import UIKit
 
 struct RootView: View {
     @EnvironmentObject var assistant: Assistant
@@ -87,9 +85,6 @@ struct TalkView: View {
     @EnvironmentObject var settings: AppSettings
     @EnvironmentObject var assistant: Assistant
     @State private var input = ""
-    /// Sohbete eklenen resimler (ekran görüntüsü, fotoğraf) — data URL
-    @State private var attached: [String] = []
-    @State private var pickerItems: [PhotosPickerItem] = []
     @FocusState private var typing: Bool
     @StateObject private var keyboard = KeyboardObserver()
 
@@ -298,38 +293,7 @@ struct TalkView: View {
     }
 
     private var inputBar: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if !attached.isEmpty {
-                HStack(spacing: 8) {
-                    Image(systemName: "photo.on.rectangle").foregroundStyle(Theme.glow)
-                    Text("\(attached.count) resim eklendi").font(.footnote).foregroundStyle(.white.opacity(0.85))
-                    Button { attached = []; pickerItems = [] } label: {
-                        Image(systemName: "xmark.circle.fill").foregroundStyle(.white.opacity(0.6))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Resimleri kaldır")
-                }
-                .padding(.horizontal, 12).padding(.vertical, 6)
-                .background(.ultraThinMaterial, in: Capsule())
-            }
-            inputRow
-        }
-        .onChange(of: pickerItems) { _, items in
-            Task { await loadImages(items) }
-        }
-    }
-
-    private var inputRow: some View {
         HStack(spacing: 10) {
-            PhotosPicker(selection: $pickerItems, maxSelectionCount: 3, matching: .images) {
-                Image(systemName: "paperclip")
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundStyle(Theme.glow)
-                    .frame(width: 30, height: 34)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Resim ekle")
             Button {
                 typing.toggle()   // klavyeyi aç / kapat
             } label: {
@@ -376,35 +340,14 @@ struct TalkView: View {
     }
 
     private var canSend: Bool {
-        (!input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attached.isEmpty) && assistant.phase != .thinking
+        !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && assistant.phase != .thinking
     }
 
     private func sendTyped() {
         let text = input
-        let images = attached
         input = ""
-        attached = []
-        pickerItems = []
         typing = false
-        assistant.send(text, images: images)
-    }
-
-    /// Seçilen resimleri küçültüp (en uzun kenar 1280) JPEG data URL'e çevirir
-    private func loadImages(_ items: [PhotosPickerItem]) async {
-        var out: [String] = []
-        for item in items.prefix(3) {
-            guard let data = try? await item.loadTransferable(type: Data.self),
-                  let image = UIImage(data: data) else { continue }
-            let maxSide: CGFloat = 1280
-            let scale = min(1, maxSide / max(image.size.width, image.size.height))
-            let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
-            let renderer = UIGraphicsImageRenderer(size: size)
-            let resized = renderer.image { _ in image.draw(in: CGRect(origin: .zero, size: size)) }
-            if let jpg = resized.jpegData(compressionQuality: 0.72) {
-                out.append("data:image/jpeg;base64," + jpg.base64EncodedString())
-            }
-        }
-        await MainActor.run { attached = out }
+        assistant.send(text)
     }
 }
 
