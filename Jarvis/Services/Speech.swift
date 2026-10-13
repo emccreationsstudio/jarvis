@@ -184,21 +184,6 @@ final class SpeechService: NSObject, ObservableObject {
         if !text.isEmpty { onSegment?(text) }
     }
 
-    nonisolated static func containsWake(_ text: String) -> Bool {
-        let t = text.lowercased(with: Locale(identifier: "tr_TR"))
-        return ["jarvis", "carvis", "çarvis", "cervis", "jervis", "jarvıs"].contains { t.contains($0) }
-    }
-
-    /// Kısa söylenişler uzatılmasın: "Tabi" → "Tabii"
-    nonisolated static func fixPronunciation(_ text: String) -> String {
-        var s = text
-        for (a, b) in [("Tabi ", "Tabii "), ("tabi ", "tabii "), ("Tabi,", "Tabii,"), ("tabi,", "tabii,"), ("Tabi.", "Tabii."), ("tabi.", "tabii.")] {
-            s = s.replacingOccurrences(of: a, with: b)
-        }
-        if s == "Tabi" || s == "tabi" { s += "i" }
-        return s
-    }
-
     nonisolated static func rms(_ buffer: AVAudioPCMBuffer) -> Float {
         guard let data = buffer.floatChannelData?[0] else { return 0 }
         let n = Int(buffer.frameLength)
@@ -221,7 +206,7 @@ final class SpeechService: NSObject, ObservableObject {
     func speak(_ text: String, completion: (() -> Void)? = nil) {
         speakDone = nil          // önceki konuşmanın devamı tetiklenmesin
         haltAudio()
-        let clean = Self.fixPronunciation(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { completion?(); return }
         do {
             let session = AVAudioSession.sharedInstance()
@@ -236,10 +221,9 @@ final class SpeechService: NSObject, ObservableObject {
 
         let chunks = Self.chunks(clean)
         let voice = s.voiceName, speed = s.voiceSpeed, base = s.serverURL, token = s.token
-        let style = s.voiceWarm ? "warm" : "classic"
         queueTexts = chunks
         queue = chunks.map { chunk in
-            Task.detached { await SpeechService.fetchTTS(chunk, voice: voice, speed: speed, style: style, base: base, token: token) }
+            Task.detached { await SpeechService.fetchTTS(chunk, voice: voice, speed: speed, base: base, token: token) }
         }
         playTask = Task { [weak self] in await self?.playQueue() }
     }
@@ -323,14 +307,14 @@ final class SpeechService: NSObject, ObservableObject {
         return out
     }
 
-    nonisolated static func fetchTTS(_ text: String, voice: String, speed: Double, style: String = "classic", base: String, token: String) async -> Data? {
+    nonisolated static func fetchTTS(_ text: String, voice: String, speed: Double, base: String, token: String) async -> Data? {
         let root = base.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let url = URL(string: root + "/tts") else { return nil }
         var req = URLRequest(url: url, timeoutInterval: 20)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        let payload: [String: Any] = ["text": text, "voice": voice, "speed": speed, "style": style]
+        let payload: [String: Any] = ["text": text, "voice": voice, "speed": speed]
         req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
         guard let result = try? await URLSession.shared.data(for: req) else { return nil }
         guard (result.1 as? HTTPURLResponse)?.statusCode == 200, !result.0.isEmpty else { return nil }
