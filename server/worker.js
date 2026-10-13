@@ -41,7 +41,13 @@ const ACTION_TYPES = [
   "delete_event",    // takvim etkinliğini sil (target_id)
   "open_maps",       // harita uygulamasında yol tarifini hemen aç (destination, origin)
   "send_message",    // mesaj hazırla (person, note = metin, title = "whatsapp" ya da "sms")
-  "call_now"         // hemen ara (person = kişi ya da numara: "112", "155")
+  "call_now",        // hemen ara (person = kişi ya da numara: "112", "155")
+  "open_app",        // telefonda uygulama aç (title = uygulama adı: "WhatsApp", "Spotify", "Ayarlar"…)
+  "open_url",        // web sayfası aç ya da internette ara (title = adres veya arama sözcükleri)
+  "run_shortcut",    // Kısayollar uygulamasındaki kısayolu çalıştır (title = kısayol adı, note = girdi)
+  "pc_command",      // bilgisayardaki Jarvis'e iş yaptır (note = bilgisayarda yapılacak işin açık tarifi)
+  "save_knowledge",  // bilgi bankasına uzun bilgi kaydet (title = başlık, note = içerik, location = kategori, priority = önem, items ["replace"] = değiştir)
+  "delete_knowledge" // bilgi bankasından başlığı sil (title)
 ];
 
 const nullableString = { type: ["string", "null"] };
@@ -86,6 +92,14 @@ function systemPrompt(userName, assistantName) {
 
 const EXTRA_RULES = `
 
+DOĞRULUK
+- Bir işlemi yaptığını ancak actions listesine koyduysan söyle. Yapamadığın şeyi yaptım deme.
+- Güncel bilgi (döviz, fiyat, skor, haber, açılış saati, kişi, olay) sorulursa ve web araması imkânın varsa ara; bulduğunu kısaca ve kaynağını anarak söyle. Bulamadıysan uydurma, bulamadığını söyle.
+- "Tabi" değil "Tabii" yaz.
+
+RESİMLER
+- Mesajla birlikte resim (ekran görüntüsü, fotoğraf) gelirse önce ne gördüğünü kısaca anla, kullanıcının isteğine göre cevap ver. Resimdeki tarih, saat, adres, liste gibi bilgileri istenirse işlemlere çevir (ör. davetiyedeki etkinliği takvime ekle).
+
 SAYILAR VE YAZIM
 - Görev başlıklarında, liste maddelerinde, notlarda ve cevaplarında sayıları HER ZAMAN rakamla yaz: "2 domates", "saat 16:30", "3 kutu", "15 Ekim", "%20".
 - Mesajın başında "SESLİ: evet" yazıyorsa mesaj konuşmadan yazıya çevrilmiştir: yanlış duyulmuş sözcükleri bağlamdan düzelt (benzer sesli kişi, ürün, liste ve yer adlarını listelerdeki/hafızadaki doğru yazımla eşleştir; "carvis/çarvis" = Jarvis). Kaydettiğin başlık ve maddeler düzgün yazılmış olsun. Emin olamadığın önemli bir ad varsa kısaca teyit et.
@@ -106,6 +120,12 @@ HARİTA, MESAJ, ARAMA
 - "Ahmet'e toplantıdayım, sonra arayacağım yaz" → send_message (person: "Ahmet", note: mesaj metni, title: "sms"; WhatsApp denirse "whatsapp"). Mesajı kullanıcının ağzından, kısa ve kibar yaz. Uygulama mesajı hazırlar, kullanıcı gönder'e basar.
 - "Annemi ara", "112'yi ara" → call_now (person). Acil durum (yangın, kaza, sağlık) söylenirse hemen call_now ile 112'yi ara ve cevabında sakin, kısa yönlendirme yap.
 - Gelen aramaları duyurmak ve meşgulken otomatik cevap iPhone'un kendi ayarlarıyla yapılır (Telefon → Aramaları Seslendir, Mesajla Yanıtla); Jarvis'in Ayarlar → Aramalar bölümünde anlatıldığını söyle.
+
+TELEFONU VE BİLGİSAYARI KULLANMA
+- "WhatsApp'ı aç", "Spotify'ı aç", "kamerayı/ayarları aç" → open_app (title = uygulama adı). Uygulamanın içinde tıklama ya da yazma yapamazsın; iPhone buna izin vermez. Bunun yerine mesaj için send_message, arama için call_now, rota için open_maps kullan.
+- "X'i internette aç / ara", "şu siteyi aç" → open_url (title = adres ya da arama).
+- Kullanıcı iPhone Kısayollar'da bir kısayol adı söylerse ("ev modu kısayolunu çalıştır") → run_shortcut. Telefonda yapamadığın otomasyonlar için kısayol kurabileceğini kısaca öner.
+- "Bilgisayarda …", "PC'de …", "masaüstünde …" ile başlayan ya da açıkça bilgisayarda yapılması gereken işler (program açma, dosya bulma/silme, bir şey yazdırma, bilgisayarda müzik açma, ekrandakini kapatma) → pc_command; note'a işi bilgisayardaki Jarvis'in anlayacağı açıklıkta yaz. Cevabında "Bilgisayara ilettim" de; sonucu uygulama ekler.
 
 HAVA DURUMU
 - Bağlamda HAVA DURUMU varsa kullan; uydurma. Takvimdeki etkinliklerle ilişkilendir: dışarıda/uzak bir etkinlik varken yağmur → şemsiye ve trafiğe ek süre öner; soğuk/rüzgârlı → mont; çok sıcak → su. Vokal kaydı/sahne günü soğuk ya da kuru havaysa boğazı koruma (ılık su, atkı) öner.
@@ -170,7 +190,13 @@ ANILAR
   title: kısa başlık ("Harbiye'de konuk sanatçı olarak sahne"), due: olayın tarihi (geçmişte olabilir; "1 ekimde" → bu yılın 1 Ekim'i, saat bilinmiyorsa T20:00), location: yer, note: kullanıcının anlattığı ayrıntılar.
 - Cevabında bunu anı olarak sakladığını sıcak bir dille söyle. "Geçen yıl bugün ne yapmıştım?" gibi sorularda ANILAR listesini kullan.
 
+BİLGİ BANKASI
+- Bağlamdaki BİLGİ BANKASI kullanıcının kendisi, stüdyosu (Freestage), şirketi (EMC / EMC Creations) ve projeleri hakkında uzun bilgilerdir. Soruları ve planları bu bilgilere dayandır; bilgi bankasında olmayanı uydurma.
+- Kullanıcı kendisi, işi, şirketi, stüdyosu, müşterileri ya da bir projesi hakkında AYRINTILI bilgi verirse ("şunu kaydet", "bunu bil", "projem şöyle") → save_knowledge: title = konu başlığı ("Freestage", "EMC Creations", "Jarvis projesi"), note = bilginin tam ve düzenli hali, location = kategori ("kişisel" | "stüdyo" | "şirket" | "proje" | "müşteri" | "genel"), priority = önem (high | normal | low). Aynı başlık varsa bilgi sonuna eklenir; tamamen yenilemesi istenirse items: ["replace"].
+- Kısa tek cümlelik tercihler ve alışkanlıklar için remember kullanmaya devam et. "Bilgi bankasından X'i sil" → delete_knowledge.
+
 HAFTALIK PROGRAM
+- "Haftamı planla", "bu haftayı önceliklendir" → BİLGİ BANKASI'ndaki projeleri, önem derecelerini ve teslim tarihlerini; takvimi, açık görevleri, özel günleri ve bayramları birlikte düşün. Önce en kritik ve gelir getiren işleri koy, gerisini dağıt. Cevabında gün gün kısa bir öncelik sırası söyle.
 - "Haftamı planla", "haftalık program yap" → takvim etkinliklerini, açık görevleri, özel günleri ve bayramları dikkate alarak makul sayıda zamanlı add_task ile programı kur (günde en fazla 3-4 iş), cevapta kısaca özetle ve show_calendar (note: "week") ekle.
 - "Haftamı/takvimimi göster", "bu hafta ne var" → show_calendar (note: "week") + kısa sesli özet. "Yılı göster" → note: "year". "Anılarımı göster" → note: "moments".`;
 }
@@ -192,6 +218,22 @@ function buildContext(ctx) {
   list("ÖZEL GÜNLER (yıllık)", ctx.specials, (d) => `[id:${d.id}] ${d.title}${d.person ? " (" + d.person + ")" : ""} | ${d.kind} | sıradaki: ${d.next}${d.years ? " | " + d.years + ". yıl" : ""}`);
   list("YAKLAŞAN BAYRAMLAR VE ÖNEMLİ GÜNLER", ctx.holidays, (h) => `${h.date} ${h.title}`);
   list("ANILAR (son)", ctx.moments, (m) => `${m.date} ${m.title}${m.place ? " @ " + m.place : ""}${m.note ? " — " + m.note : ""}`);
+  if (Array.isArray(ctx.knowledge) && ctx.knowledge.length) {
+    lines.push("BİLGİ BANKASI:");
+    const rank = { "yüksek": 0, "high": 0, "normal": 1, "düşük": 2, "low": 2 };
+    const docs = ctx.knowledge
+      .filter((k) => k && typeof k.title === "string")
+      .sort((a, b) => (rank[a.importance] ?? 1) - (rank[b.importance] ?? 1));
+    let budget = 9000;
+    for (const k of docs) {
+      const body = String(k.content || "").replace(/\s+\n/g, "\n").trim();
+      const room = Math.max(0, Math.min(body.length, budget));
+      if (room <= 0) { lines.push(`  # ${k.title} (${k.category || "genel"}) — ayrıntı sığmadı`); continue; }
+      lines.push(`  # ${k.title} (${k.category || "genel"}, önem: ${k.importance || "normal"})`);
+      lines.push("    " + body.slice(0, room).replace(/\n/g, "\n    ") + (room < body.length ? " …" : ""));
+      budget -= room;
+    }
+  }
   list("KULLANICI LİSTELERİ", ctx.lists, (l) =>
     `[id:${l.id}] ${l.name}${l.daily ? " (günlük)" : ""}: ${(l.items || []).join(", ") || "(boş)"}${l.done?.length ? " | işaretli: " + l.done.join(", ") : ""}`);
   return lines.join("\n");
@@ -263,27 +305,42 @@ async function handleChat(request, env) {
   ]);
   const extra = [weather, news].filter(Boolean).join("\n");
   const voiceTag = body.voice === true ? "SESLİ: evet\n" : "";
+  const images = (Array.isArray(body.images) ? body.images : [])
+    .filter((u) => typeof u === "string" && /^data:image\/(png|jpe?g|gif|webp);base64,/.test(u) && u.length < 8_000_000)
+    .slice(0, 3);
+  const userText = `${buildContext(ctx)}${extra ? "\n" + extra : ""}\n\n${voiceTag}KULLANICI: ${message.slice(0, 4000)}`;
 
   const payload = {
     model: env.OPENAI_MODEL || DEFAULT_MODEL,
     instructions: systemPrompt(ctx.userName || "Ertunç", ctx.assistantName || "Jarvis"),
     input: [
       ...history,
-      { role: "user", content: `${buildContext(ctx)}${extra ? "\n" + extra : ""}\n\n${voiceTag}KULLANICI: ${message.slice(0, 4000)}` }
+      images.length
+        ? { role: "user", content: [{ type: "input_text", text: userText }, ...images.map((u) => ({ type: "input_image", image_url: u }))] }
+        : { role: "user", content: userText }
     ],
     text: {
       format: { type: "json_schema", name: "jarvis_response", strict: true, schema: RESPONSE_SCHEMA }
     }
   };
+  // Güncel bilgi gerekiyorsa internette arasın (desteklenmezse aramasız tekrar dener)
+  if (env.WEB_SEARCH !== "0" && wantsWeb(message)) {
+    payload.tools = [{ type: "web_search", user_location: { type: "approximate", country: "TR", city: "Istanbul", timezone: "Europe/Istanbul" } }];
+  }
 
-  const res = await fetch("https://api.openai.com/v1/responses", {
+  const callOpenAI = (p) => fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
       "content-type": "application/json",
       authorization: `Bearer ${env.OPENAI_API_KEY}`
     },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(p)
   });
+  let res = await callOpenAI(payload);
+  if (!res.ok && payload.tools) {
+    delete payload.tools;
+    res = await callOpenAI(payload);
+  }
 
   if (!res.ok) {
     const detail = await res.text();
@@ -298,6 +355,11 @@ async function handleChat(request, env) {
     return json({ error: "Cevap çözümlenemedi.", detail: String(e.message || e) }, 502);
   }
   return json(sanitize(parsed));
+}
+
+function wantsWeb(text) {
+  return /(dolar|euro|avro|döviz|kur |kuru|altın|bitcoin|borsa|hisse|fiyat|kaç para|ne kadar tutar|maç|skor|kazandı|puan durumu|son dakika|internette|araştır|google'?la|webde|kimdir|kim oldu|ne zaman açılı|açık mı|seçim|deprem|benzin|motorin|vizyonda|sinema|konser|etkinlik|trafik durumu|yol durumu|kapalı mı)/i
+    .test(text.toLocaleLowerCase("tr-TR"));
 }
 
 // --- Hava durumu (Open-Meteo, anahtar gerektirmez) ---
@@ -424,6 +486,9 @@ async function getNews() {
 // --- Ses (metni doğal sese çevirir) ---
 const DEFAULT_TTS_MODEL = "gpt-4o-mini-tts";
 const TTS_VOICES = ["onyx", "ash", "echo", "alloy", "ballad", "coral", "sage", "shimmer", "verse", "nova", "fable"];
+const TTS_WARM =
+  "Türkçe konuş. Sıcak, yumuşak, alçak ve hafif fısıltılı, çekici ve kendinden emin bir kadın sesi; " +
+  "yavaşça ve tatlı bir gülümsemeyle konuş, kelimeleri uzatmadan net söyle, doğal duraksamalar yap.";
 const TTS_STYLE =
   "Türkçe konuş. Sakin, kendinden emin, sıcak ve akıcı bir kişisel asistan gibi; " +
   "kibar ama samimi, hafif esprili bir uşak tonu. Doğal vurgu ve tonlama kullan, " +
@@ -435,7 +500,7 @@ async function handleTTS(request, env) {
   const text = String(body?.text ?? "").trim().slice(0, 4000);
   if (!text) return json({ error: "Metin boş." }, 400);
   const voice = TTS_VOICES.includes(body?.voice) ? body.voice : "onyx";
-  const speed = Math.min(1.4, Math.max(0.8, Number(body?.speed) || 1.05));
+  const speed = Math.min(1.8, Math.max(0.8, Number(body?.speed) || 1.05));
 
   const res = await fetch("https://api.openai.com/v1/audio/speech", {
     method: "POST",
@@ -444,7 +509,7 @@ async function handleTTS(request, env) {
       model: env.TTS_MODEL || DEFAULT_TTS_MODEL,
       voice,
       input: text,
-      instructions: TTS_STYLE,
+      instructions: body?.style === "warm" ? TTS_WARM : TTS_STYLE,
       speed,
       response_format: "mp3"
     })
@@ -503,6 +568,51 @@ async function handleSync(request, env) {
   return json({ error: "Desteklenmeyen yöntem." }, 405);
 }
 
+// --- Telefondan bilgisayara komut kuyruğu ---
+// Telefon: POST /pc {text} → {id}; sonra GET /pc/result?id=… ile cevabı bekler.
+// Bilgisayar: GET /pc → bekleyen komutları alır; POST /pc/done {id, reply} ile sonucu bildirir.
+async function handlePC(request, env, url) {
+  if (!env.JARVIS_KV) return json({ error: "Bilgisayar kuyruğu kapalı: JARVIS_KV yok." }, 501);
+  const load = async () => (await env.JARVIS_KV.get("pc_queue", "json")) || [];
+  const saveQ = (q) => env.JARVIS_KV.put("pc_queue", JSON.stringify(q.slice(-50)));
+  const now = Date.now();
+  if (url.pathname === "/pc" && request.method === "POST") {
+    let body; try { body = await request.json(); } catch { return json({ error: "Geçersiz istek." }, 400); }
+    const text = String(body?.text || "").trim().slice(0, 2000);
+    if (!text) return json({ error: "Komut boş." }, 400);
+    const q = (await load()).filter((c) => now - c.at < 86400000);
+    const item = { id: crypto.randomUUID(), text, at: now, status: "pending", reply: null };
+    q.push(item);
+    await saveQ(q);
+    return json({ id: item.id, status: "pending" });
+  }
+  if (url.pathname === "/pc" && request.method === "GET") {
+    const q = await load();
+    const pending = q.filter((c) => c.status === "pending" && now - c.at < 600000);
+    if (pending.length) {
+      pending.forEach((c) => { c.status = "taken"; c.takenAt = now; });
+      await saveQ(q);
+    }
+    return json({ commands: pending.map((c) => ({ id: c.id, text: c.text, at: c.at })) });
+  }
+  if (url.pathname === "/pc/result" && request.method === "GET") {
+    const id = url.searchParams.get("id");
+    const c = (await load()).find((x) => x.id === id);
+    if (!c) return json({ error: "Bulunamadı." }, 404);
+    return json({ id: c.id, status: c.status, reply: c.reply });
+  }
+  if (url.pathname === "/pc/done" && request.method === "POST") {
+    let body; try { body = await request.json(); } catch { return json({ error: "Geçersiz istek." }, 400); }
+    const q = await load();
+    const c = q.find((x) => x.id === body?.id);
+    if (!c) return json({ error: "Bulunamadı." }, 404);
+    c.status = "done"; c.reply = String(body?.reply || "Tamam.").slice(0, 1500);
+    await saveQ(q);
+    return json({ ok: true });
+  }
+  return json({ error: "Desteklenmeyen yöntem." }, 405);
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -524,6 +634,9 @@ export default {
     }
     if (url.pathname === "/sync") {
       return handleSync(request, env);
+    }
+    if (url.pathname === "/pc" || url.pathname === "/pc/result" || url.pathname === "/pc/done") {
+      return handlePC(request, env, url);
     }
     return json({ error: "Bulunamadı." }, 404);
   }

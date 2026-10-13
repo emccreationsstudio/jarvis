@@ -149,7 +149,7 @@ await test("ses: /tts OpenAI'den mp3 döndürüyor, ses ve hız sınırlanıyor"
   assert.equal(r.headers.get("content-type"), "audio/mpeg");
   assert.equal((await r.arrayBuffer()).byteLength, 3);
   assert.equal(sent.voice, "onyx");
-  assert.equal(sent.speed, 1.4);
+  assert.equal(sent.speed, 1.8);
   assert.equal(sent.model, "gpt-4o-mini-tts");
   assert.ok(sent.instructions.includes("Türkçe"));
   assert.equal((await worker.fetch(req("/tts", { text: "x" }, "yanlis"), env)).status, 401);
@@ -306,6 +306,41 @@ await test("sesli mesaj işaretleniyor, listeler ve takvim id'leri bağlamda", a
   // yazılı mesajda işaret yok
   await worker.fetch(req("/chat", { message: "selam" }), env);
   assert.ok(!lastPayload.input.at(-1).content.includes("SESLİ"));
+});
+
+
+await test("bilgi bankası bağlamda, resim ekleniyor, güncel soruda web araması açılıyor", async () => {
+  fakeReply = { reply: "Tamam.", actions: [{ type: "save_knowledge", title: "Freestage", items: [], due: null, end: null, priority: "high", person: null, origin: null, destination: null, location: "stüdyo", note: "Kadıköy'de kayıt stüdyosu", target_id: null }] };
+  const r = await worker.fetch(req("/chat", {
+    message: "bu hafta neye öncelik vereyim",
+    images: ["data:image/png;base64,iVBORw0KGgo=", "javascript:alert(1)"],
+    context: { knowledge: [{ title: "Freestage", category: "stüdyo", importance: "yüksek", content: "Kayıt stüdyosu ve akademi" }] }
+  }), env);
+  const out = await r.json();
+  assert.equal(out.actions[0].type, "save_knowledge");
+  const content = lastPayload.input.at(-1).content;
+  assert.ok(Array.isArray(content));
+  assert.ok(content[0].text.includes("BİLGİ BANKASI:") && content[0].text.includes("# Freestage (stüdyo, önem: yüksek)"));
+  assert.equal(content.filter((c) => c.type === "input_image").length, 1);
+  assert.ok(!lastPayload.tools);
+  await worker.fetch(req("/chat", { message: "dolar bugün kaç lira" }), env);
+  assert.equal(lastPayload.tools[0].type, "web_search");
+  assert.ok(lastPayload.instructions.includes("pc_command"));
+});
+
+await test("telefondan bilgisayara komut kuyruğu", async () => {
+  const store = new Map();
+  const kv = { get: async (k, t) => (store.has(k) ? (t === "json" ? JSON.parse(store.get(k)) : store.get(k)) : null), put: async (k, v) => { store.set(k, v); } };
+  const e = { ...env, JARVIS_KV: kv };
+  const sent = await (await worker.fetch(req("/pc", { text: "bilgisayarda spotify aç" }), e)).json();
+  assert.ok(sent.id);
+  const got = await (await worker.fetch(req("/pc", null, "gizli123", "GET"), e)).json();
+  assert.equal(got.commands.length, 1);
+  assert.equal((await (await worker.fetch(req("/pc", null, "gizli123", "GET"), e)).json()).commands.length, 0);
+  await worker.fetch(req("/pc/done", { id: sent.id, reply: "Spotify açıldı efendim." }), e);
+  const res = await (await worker.fetch(req("/pc/result?id=" + sent.id, null, "gizli123", "GET"), e)).json();
+  assert.equal(res.status, "done");
+  assert.equal(res.reply, "Spotify açıldı efendim.");
 });
 
 console.log(`\n${n} test geçti`);
