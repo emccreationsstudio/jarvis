@@ -11,9 +11,13 @@ final class BufferSink: @unchecked Sendable {
     func set(_ r: SFSpeechAudioBufferRecognitionRequest?) {
         lock.lock(); request = r; lock.unlock()
     }
+    private var last: TimeInterval = 0
     func append(_ b: AVAudioPCMBuffer) {
-        lock.lock(); request?.append(b); lock.unlock()
+        lock.lock(); request?.append(b); last = Date().timeIntervalSince1970; lock.unlock()
     }
+    /// Mikrofondan en son ses parçasının geldiği an (hiç gelmediyse 0)
+    var lastBuffer: TimeInterval { lock.lock(); defer { lock.unlock() }; return last }
+    func resetClock() { lock.lock(); last = 0; lock.unlock() }
 }
 
 /// Türkçe konuşmayı sürekli dinler (cihaz üzerinde) ve her duraksamada söyleneni parça olarak bildirir.
@@ -31,7 +35,12 @@ final class SpeechService: NSObject, ObservableObject {
     var vocabulary: [String] = []
 
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "tr-TR"))
-    private let engine = AVAudioEngine()
+    // 1.2.1: her dinlemede TAZE ses motoru. Konuştuktan sonra eski motor eski ses biçimiyle kalıyor,
+    // mikrofon "açık" görünse de hiç ses gelmiyordu → "Dinliyorum"da takılıp kalıyordu.
+    private var engine = AVAudioEngine()
+    private var micWatch: Task<Void, Never>?
+    private var micRestarts = 0
+    private var observers: [NSObjectProtocol] = []
     private let sink = BufferSink()
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var recogTask: SFSpeechRecognitionTask?
@@ -45,6 +54,39 @@ final class SpeechService: NSObject, ObservableObject {
     override init() {
         super.init()
         synth.delegate = self
+        // Kulaklık takıldı/çıkarıldı, arama geldi, ses sistemi sıfırlandı → dinliyorsak mikrofonu yeniden kur
+        let nc = NotificationCenter.default
+        for name in [AVAudioSession.routeChangeNotification, AVAudioSession.interruptionNotification,
+                     AVAudioSession.mediaServicesWereResetNotification] {
+            observers.append(nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.restartMicSoon() }
+            })
+        }
+    }
+
+    private var restartPending = false
+    private func restartMicSoon() {
+        guard isListening, !restartPending, let cb = onSegment else { return }
+        restartPending = true
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard let self else { return }
+            self.restartPending = false
+            guard self.isListening else { return }
+            self.stopMic()
+            _ = self.startMic(onSegment: cb)
+        }
+    }
+
+    /// Ses oturumunu tek kategoride tut (konuşma ve dinleme ikisi de). Kategori değiştirmek iOS'ta ses
+    /// yolunu değiştirip mikrofonun sessiz kalmasına yol açıyordu.
+    private func prepareSession() throws {
+        let session = AVAudioSession.sharedInstance()
+        if session.category != .playAndRecord || session.mode != .default {
+            try session.setCategory(.playAndRecord, mode: .default,
+                                    options: [.duckOthers, .defaultToSpeaker, .allowBluetoothA2DP])
+        }
+        try session.setActive(true, options: .notifyOthersOnDeactivation)
     }
 
     // MARK: İzinler
@@ -67,14 +109,16 @@ final class SpeechService: NSObject, ObservableObject {
         guard let recognizer, recognizer.isAvailable else { return false }
 
         do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .defaultToSpeaker, .allowBluetoothA2DP])
-            try session.setActive(true, options: .notifyOthersOnDeactivation)
-
+            try prepareSession()
+            if engine.isRunning { engine.stop() }
+            engine.inputNode.removeTap(onBus: 0)
+            engine = AVAudioEngine()                       // taze motor: güncel mikrofon biçimiyle
             let input = engine.inputNode
-            let format = input.outputFormat(forBus: 0)
-            input.removeTap(onBus: 0)
+            let format = input.inputFormat(forBus: 0)
+            // Ses sistemi henüz hazır değilse biçim 0 Hz gelir; bununla dinlemeye başlamak çöktürüyordu
+            guard format.sampleRate > 0, format.channelCount > 0 else { return false }
             let sink = self.sink
+            sink.resetClock()
             input.installTap(onBus: 0, bufferSize: 1024, format: format) { @Sendable [weak self] buffer, _ in
                 sink.append(buffer)
                 let lvl = SpeechService.rms(buffer)
@@ -84,6 +128,7 @@ final class SpeechService: NSObject, ObservableObject {
             try engine.start()
             isListening = true
             startRecognition()
+            watchMic()
             return true
         } catch {
             stopMic()
@@ -91,8 +136,30 @@ final class SpeechService: NSObject, ObservableObject {
         }
     }
 
+    /// Mikrofon açık görünüp hiç ses gelmiyorsa (iOS bazen sessiz bırakıyor) kendiliğinden yeniden kur.
+    private func watchMic() {
+        micWatch?.cancel()
+        micWatch = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            guard let self, !Task.isCancelled, self.isListening, let cb = self.onSegment else { return }
+            let last = self.sink.lastBuffer
+            if last == 0 || Date().timeIntervalSince1970 - last > 2.0 {
+                guard self.micRestarts < 4 else { return }
+                self.micRestarts += 1
+                self.stopMic()
+                try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                _ = self.startMic(onSegment: cb)
+            } else {
+                self.micRestarts = 0
+                self.watchMic()                              // dinleme sürdükçe kontrol et
+            }
+        }
+    }
+
     /// Mikrofonu kapatır (ör. Jarvis konuşurken kendini duymasın diye). Yarım kalan söz atılır.
     func stopMic() {
+        micWatch?.cancel(); micWatch = nil
         pauseTimer?.invalidate(); pauseTimer = nil
         generation += 1
         if engine.isRunning { engine.stop() }
@@ -208,11 +275,7 @@ final class SpeechService: NSObject, ObservableObject {
         haltAudio()
         let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { completion?(); return }
-        do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
-            try session.setActive(true)
-        } catch {}
+        try? prepareSession()          // dinlemeyle aynı kategori: geri dönüşte mikrofon sessiz kalmasın
         speakDone = completion
         isSpeaking = true
 
