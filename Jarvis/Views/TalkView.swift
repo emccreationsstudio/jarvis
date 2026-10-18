@@ -192,6 +192,29 @@ struct TalkView: View {
                 .tracking(1)
                 .foregroundStyle(.white.opacity(0.45))
                 .multilineTextAlignment(.center)
+            if assistant.speech.isListening {
+                // Tanı satırı: mikrofona ses geliyor mu, tanıma hangi yoldan, hata var mı
+                HStack(spacing: 6) {
+                    Text("SES").font(.system(size: 8, design: .monospaced)).foregroundStyle(.white.opacity(0.4))
+                    GeometryReader { g in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(Color.white.opacity(0.1))
+                            Capsule().fill(assistant.speech.level > 0.02 ? Theme.glow : Color.red.opacity(0.7))
+                                .frame(width: max(3, g.size.width * CGFloat(min(1, assistant.speech.level))))
+                        }
+                    }
+                    .frame(width: 70, height: 4)
+                    Text("· TANIMA: \(assistant.speech.recognitionMode.uppercased(with: Locale(identifier: "tr_TR")))")
+                        .font(.system(size: 8, design: .monospaced)).foregroundStyle(.white.opacity(0.4))
+                }
+            }
+            if let broken = assistant.speech.recognitionBroken ?? (assistant.speech.micDead ? "Mikrofondan ses gelmiyor. Başka bir uygulama (Siri, arama, kayıt) mikrofonu tutuyor olabilir; mikrofon düğmesine basın." : nil) {
+                Text(broken)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.red.opacity(0.9))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+            }
         }
         .padding(.bottom, 4)
         .animation(.easeInOut, value: assistant.phase)

@@ -140,11 +140,19 @@ final class SpeechService: NSObject, ObservableObject {
             input.installTap(onBus: 0, bufferSize: 1024, format: format) { @Sendable [weak self] buffer, _ in
                 sink.append(buffer)
                 let lvl = SpeechService.rms(buffer)
-                Task { @MainActor in self?.level = lvl }
+                Task { @MainActor in
+                    self?.level = lvl
+                    if lvl > 0.2, let me = self {
+                        let n = Date()
+                        if n.timeIntervalSince(me.lastLoudAt) > 1.5 { me.loudStreakStart = n }   // yeni konuşma başladı
+                        me.lastLoudAt = n
+                    }
+                }
             }
             engine.prepare()
             try engine.start()
             isListening = true
+            lastPartialAt = Date()
             startRecognition()
             watchMic()
             return true
@@ -176,6 +184,14 @@ final class SpeechService: NSObject, ObservableObject {
             } else {
                 self.micRestarts = 0
                 self.micDead = false
+                // Konuşuluyor (ses yüksek) ama tanıma 6 sn'dir hiç yazı üretmiyorsa: tanıma yolunu değiştir
+                let n = Date()
+                if n.timeIntervalSince(self.lastLoudAt) < 2, n.timeIntervalSince(self.loudStreakStart) > 4,
+                   self.lastPartialAt < self.loudStreakStart {
+                    self.flipOnDevice.toggle()
+                    self.lastPartialAt = n
+                    self.startRecognition()
+                }
                 self.watchMic()                              // dinleme sürdükçe kontrol et
             }
         }
@@ -219,18 +235,29 @@ final class SpeechService: NSObject, ObservableObject {
         // Apple'ın sunucudaki tanıması Türkçede cihazdakinden belirgin şekilde daha doğru.
         // "Gelişmiş tanıma" kapalıysa (ya da internet yoksa) cihaz üzerinde tanınır.
         if recognizer.supportsOnDeviceRecognition {
-            req.requiresOnDeviceRecognition = !AppSettings.shared.cloudRecognition || serverRecognitionFailures >= 2
+            var onDevice = !AppSettings.shared.cloudRecognition || serverRecognitionFailures >= 2
+            if flipOnDevice { onDevice.toggle() }          // bu yol üst üste hata veriyor: diğerini dene
+            req.requiresOnDeviceRecognition = onDevice
         }
         request = req
         sink.set(req)
         partialText = ""
 
+        recognitionMode = req.requiresOnDeviceRecognition ? "cihaz" : "bulut"
         recogTask = recognizer.recognitionTask(with: req) { @Sendable [weak self] result, error in
             let text = result?.bestTranscription.formattedString
             let isFinal = result?.isFinal ?? false
+            let code = (error as NSError?)?.code ?? 0
+            // 1110 = konuşma duyulmadı, 216/301 = biz iptal ettik: bunlar arıza değil
             let failed = error != nil
+            let realError = error != nil && ![1110, 216, 301].contains(code)
+            let errInfo: String? = error.map { e in
+                let ns = e as NSError
+                return "\(ns.domain.replacingOccurrences(of: "kAFAssistantErrorDomain", with: "Siri")) \(ns.code): \(ns.localizedDescription)"
+            }
             Task { @MainActor in
-                self?.handle(gen: gen, text: text, isFinal: isFinal, failed: failed)
+                if realError, let errInfo { self?.lastRecogError = errInfo }
+                self?.handle(gen: gen, text: text, isFinal: isFinal, failed: failed, realError: realError)
             }
         }
     }
@@ -238,20 +265,41 @@ final class SpeechService: NSObject, ObservableObject {
     /// Sunucu tanıması üst üste başarısız olursa (internet yok) cihaz üzerine geç
     private var serverRecognitionFailures = 0
 
-    private func handle(gen: Int, text: String?, isFinal: Bool, failed: Bool) {
+    // 1.2.3: tanıma hata verip boş dönünce eskiden sessizce yeniden başlıyordu → sonsuz döngü, ekran "Dinliyorum"da
+    // kalıyordu. Artık hatalar sayılıyor: 3 kez üst üste olursa tanıma yolu değiştiriliyor (bulut ↔ cihaz),
+    // 6 kez olursa ekranda nedeni gösteriliyor.
+    @Published private(set) var recognitionMode = ""
+    @Published private(set) var lastRecogError: String?
+    @Published private(set) var recognitionBroken: String?
+    private var emptyFails = 0
+    private var flipOnDevice = false
+    private var lastLoudAt = Date.distantPast
+    private var loudStreakStart = Date.distantPast
+    private var lastPartialAt = Date()
+
+    private func handle(gen: Int, text: String?, isFinal: Bool, failed: Bool, realError: Bool = false) {
         guard gen == generation, isListening else { return }
-        if failed && (text ?? "").isEmpty { serverRecognitionFailures += 1 }
-        if let text, !text.isEmpty { serverRecognitionFailures = 0 }
+        if realError && (text ?? "").isEmpty {
+            serverRecognitionFailures += 1
+            emptyFails += 1
+            if emptyFails % 3 == 0 { flipOnDevice.toggle() }
+            if emptyFails >= 6 {
+                recognitionBroken = "Konuşma tanıma çalışmıyor (\(lastRecogError ?? "bilinmeyen hata")). iPhone Ayarlar → Siri'de \"Siri ve Dikte\" açık mı, Türkçe dikte yüklü mü bakın."
+            }
+        }
+        if let text, !text.isEmpty { serverRecognitionFailures = 0; emptyFails = 0; recognitionBroken = nil }
         if let text, text != partialText {
             partialText = text
+            lastPartialAt = Date()
             if !text.isEmpty { schedulePause() }
         }
         if isFinal || failed {
             if partialText.trimmingCharacters(in: .whitespaces).isEmpty {
                 // Konuşma yokken tanıma kapandı (ör. süre doldu) → kısa bekleyip yeniden başla
                 let g = generation
+                let wait: UInt64 = emptyFails >= 6 ? 3_000_000_000 : 400_000_000   // bozuksa sistemi yormadan yavaş dene
                 Task { @MainActor [weak self] in
-                    try? await Task.sleep(nanoseconds: 400_000_000)
+                    try? await Task.sleep(nanoseconds: wait)
                     guard let self, self.isListening, self.generation == g else { return }
                     self.startRecognition()
                 }
