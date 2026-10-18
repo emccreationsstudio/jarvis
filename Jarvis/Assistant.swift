@@ -84,7 +84,18 @@ final class Assistant: ObservableObject {
     @Published private(set) var sessionStart = Calendar.current.startOfDay(for: Date())
 
     /// Uygulama ön plana geldi (Siri, ikon, Arkaya Dokunma…)
+    private var activeSince = Date()
+
+    /// Yazı alanının yanındaki mikrofon: dinlemiyorsa başlat, dinliyorsa mikrofonu sıfırdan kur
+    func micButton() {
+        if !conversing { startConversation(); return }
+        if phase == .speaking { speech.stopSpeaking(); return }
+        speech.stopMic()
+        openMic()
+    }
+
     func appBecameActive() {
+        activeSince = Date()
         Task { await SyncService.shared.pull() }   // eşitleme açıksa bilgisayardaki değişiklikleri al
         sessionStart = Calendar.current.startOfDay(for: Date())
         store.housekeeping()                       // günlük listeleri sıfırla, eski çöpü at
@@ -140,6 +151,10 @@ final class Assistant: ObservableObject {
                 return
             }
             speech.stopSpeaking()
+            // Siri ile açıldıysa Siri mikrofonu bir an daha tutuyor; hemen başlarsak boş ses geliyordu
+            if UIApplication.shared.applicationState != .active || Date().timeIntervalSince(activeSince) < 1.5 {
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+            }
             conversing = true
             closeAfterReply = false
             pendingNotes = []

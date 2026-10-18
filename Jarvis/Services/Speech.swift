@@ -12,12 +12,28 @@ final class BufferSink: @unchecked Sendable {
         lock.lock(); request = r; lock.unlock()
     }
     private var last: TimeInterval = 0
+    private var lastSignal: TimeInterval = 0
     func append(_ b: AVAudioPCMBuffer) {
-        lock.lock(); request?.append(b); last = Date().timeIntervalSince1970; lock.unlock()
+        let now = Date().timeIntervalSince1970
+        var peak: Float = 0
+        if let d = b.floatChannelData?[0] {
+            let n = Int(b.frameLength)
+            var i = 0
+            while i < n { peak = max(peak, abs(d[i])); i += 4 }
+        }
+        lock.lock()
+        request?.append(b)
+        last = now
+        // Gerçek bir mikrofonda sessiz odada bile hafif gürültü olur. Tamamen sıfır ses = mikrofon başka
+        // bir yerde (ör. Siri hâlâ tutuyor), bize boş ses geliyor.
+        if peak > 0.00001 { lastSignal = now }
+        lock.unlock()
     }
     /// Mikrofondan en son ses parçasının geldiği an (hiç gelmediyse 0)
     var lastBuffer: TimeInterval { lock.lock(); defer { lock.unlock() }; return last }
-    func resetClock() { lock.lock(); last = 0; lock.unlock() }
+    /// En son sıfırdan farklı (gerçek) sesin geldiği an
+    var lastRealSound: TimeInterval { lock.lock(); defer { lock.unlock() }; return lastSignal }
+    func resetClock() { lock.lock(); last = 0; lastSignal = Date().timeIntervalSince1970; lock.unlock() }
 }
 
 /// Türkçe konuşmayı sürekli dinler (cihaz üzerinde) ve her duraksamada söyleneni parça olarak bildirir.
@@ -40,6 +56,8 @@ final class SpeechService: NSObject, ObservableObject {
     private var engine = AVAudioEngine()
     private var micWatch: Task<Void, Never>?
     private var micRestarts = 0
+    /// Mikrofon defalarca denenip hiç ses alınamadıysa true (ekranda uyarı gösterilir)
+    @Published private(set) var micDead = false
     private var observers: [NSObjectProtocol] = []
     private let sink = BufferSink()
     private var request: SFSpeechAudioBufferRecognitionRequest?
@@ -142,16 +160,22 @@ final class SpeechService: NSObject, ObservableObject {
         micWatch = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 2_500_000_000)
             guard let self, !Task.isCancelled, self.isListening, let cb = self.onSegment else { return }
+            let now = Date().timeIntervalSince1970
             let last = self.sink.lastBuffer
-            if last == 0 || Date().timeIntervalSince1970 - last > 2.0 {
-                guard self.micRestarts < 4 else { return }
+            let dead = last == 0 || now - last > 2.0 || now - self.sink.lastRealSound > 2.5
+            if dead {
+                guard self.micRestarts < 6 else { self.micDead = true; return }
                 self.micRestarts += 1
                 self.stopMic()
                 try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-                try? await Task.sleep(nanoseconds: 300_000_000)
-                _ = self.startMic(onSegment: cb)
+                try? await Task.sleep(nanoseconds: 800_000_000)
+                if !self.startMic(onSegment: cb) {        // ses sistemi hâlâ meşgul: biraz daha bekle, bir kez daha dene
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    _ = self.startMic(onSegment: cb)
+                }
             } else {
                 self.micRestarts = 0
+                self.micDead = false
                 self.watchMic()                              // dinleme sürdükçe kontrol et
             }
         }

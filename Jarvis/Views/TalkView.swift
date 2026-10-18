@@ -311,6 +311,18 @@ struct TalkView: View {
                 .submitLabel(.send)
                 .onSubmit(sendTyped)
                 .foregroundStyle(.white)
+            if !canSend {
+                Button { assistant.micButton() } label: {
+                    Image(systemName: assistant.speech.isListening ? "mic.fill" : "mic")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(assistant.speech.micDead ? Color.red : (assistant.speech.isListening ? .white : Theme.glow))
+                        .frame(width: 34, height: 34)
+                        .background(Circle().fill(assistant.speech.isListening ? Theme.accent : Color.white.opacity(0.08)))
+                        .shadow(color: assistant.speech.isListening ? Theme.glow.opacity(0.7) : .clear, radius: 8)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Mikrofon: dinlemeyi başlat ya da yeniden kur")
+            }
             Button(action: sendTyped) {
                 Image(systemName: "arrow.up")
                     .font(.system(size: 15, weight: .bold))
