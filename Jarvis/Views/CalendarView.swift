@@ -70,6 +70,8 @@ private struct WeekPage: View {
     @State private var events: [CalendarService.Event] = []
     @State private var editingEvent: CalendarService.Event?
     @State private var editingTask: TaskItem?
+    @State private var addingOn: AddDay?
+    @State private var deletingEvent: CalendarService.Event?
 
     private var weekStart: Date {
         let base = trCal.dateInterval(of: .weekOfYear, for: Date())?.start ?? trCal.startOfDay(for: Date())
@@ -104,11 +106,20 @@ private struct WeekPage: View {
                 }
                 .buttonStyle(HUDButtonStyle())
 
+                Button {
+                    addingOn = AddDay(date: trCal.isDate(Date(), equalTo: weekStart, toGranularity: .weekOfYear) ? Date() : weekStart)
+                } label: {
+                    Label("Etkinlik ya da hatırlatma ekle", systemImage: "plus.circle.fill")
+                }
+                .buttonStyle(HUDButtonStyle())
+
                 ForEach(days, id: \.self) { day in
                     DayCard(day: day, events: events.filter { trCal.isDate($0.start, inSameDayAs: day) },
-                            onEvent: { editingEvent = $0 }, onTask: { editingTask = $0 })
+                            onEvent: { editingEvent = $0 }, onTask: { editingTask = $0 },
+                            onAdd: { addingOn = AddDay(date: day) },
+                            onDeleteEvent: { deletingEvent = $0 })
                 }
-                Text("Etkinliğe ya da göreve dokun: düzenle, ertele, sil. Jarvis'e \"yarınki toplantıyı 3'e al\" da diyebilirsin.")
+                Text("Etkinliğe ya da göreve dokun: düzenle, ertele, sil. Basılı tutunca hızlı menü açılır, günün yanındaki + ile o güne ekle. Jarvis'e \"yarınki toplantıyı 3'e al\" da diyebilirsin.")
                     .font(.caption2).foregroundStyle(.white.opacity(0.4))
                     .multilineTextAlignment(.center)
                 if !CalendarService.shared.hasAccess {
@@ -125,6 +136,17 @@ private struct WeekPage: View {
         .onChange(of: offset) { _, _ in load() }
         .sheet(item: $editingEvent, onDismiss: load) { e in EventEditor(event: e) }
         .sheet(item: $editingTask) { t in TaskEditor(task: t) }
+        .sheet(item: $addingOn, onDismiss: load) { d in AddEventSheet(day: d.date) }
+        .confirmationDialog("“\(deletingEvent?.title ?? "")” silinsin mi?",
+                            isPresented: Binding(get: { deletingEvent != nil }, set: { if !$0 { deletingEvent = nil } }),
+                            titleVisibility: .visible) {
+            Button("Etkinliği sil", role: .destructive) {
+                guard let id = deletingEvent?.id else { return }
+                Task { _ = await CalendarService.shared.delete(id: id); deletingEvent = nil; load() }
+            }
+        } message: {
+            Text("Telefon takviminden silinir.")
+        }
     }
 
     private var rangeText: String {
@@ -145,6 +167,8 @@ private struct DayCard: View {
     let events: [CalendarService.Event]
     var onEvent: (CalendarService.Event) -> Void = { _ in }
     var onTask: (TaskItem) -> Void = { _ in }
+    var onAdd: () -> Void = {}
+    var onDeleteEvent: (CalendarService.Event) -> Void = { _ in }
 
     var body: some View {
         let holidays = Holiday.between(day, day)
@@ -161,6 +185,11 @@ private struct DayCard: View {
                 Text(day.formatted(.dateTime.day().month(.wide).locale(trLocale)))
                     .font(.caption).foregroundStyle(.white.opacity(0.55))
                 Spacer()
+                Button(action: onAdd) {
+                    Image(systemName: "plus.circle").font(.system(size: 17)).foregroundStyle(Theme.glow)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Bu güne ekle")
                 if isToday {
                     Text("BUGÜN")
                         .font(.system(size: 9, weight: .bold, design: .monospaced)).tracking(1.5)
@@ -184,6 +213,14 @@ private struct DayCard: View {
                           title: e.title, detail: e.location, color: Theme.glow, icon: "calendar")
                     .contentShape(Rectangle())
                     .onTapGesture { if e.id != nil { onEvent(e) } }
+                    .contextMenu {
+                        if e.id != nil {
+                            Button { onEvent(e) } label: { Label(e.editable ? "Düzenle / ertele" : "Aç", systemImage: "pencil") }
+                            if e.editable {
+                                Button(role: .destructive) { onDeleteEvent(e) } label: { Label("Sil", systemImage: "trash") }
+                            }
+                        }
+                    }
             }
             ForEach(tasks) { t in
                 AgendaRow(time: t.due.map { $0.formatted(.dateTime.hour().minute().locale(trLocale)) } ?? "",
@@ -193,6 +230,13 @@ private struct DayCard: View {
                     .opacity(t.done ? 0.5 : 1)
                     .contentShape(Rectangle())
                     .onTapGesture { onTask(t) }
+                    .contextMenu {
+                        Button { onTask(t) } label: { Label("Düzenle / ertele", systemImage: "pencil") }
+                        Button {
+                            var x = t; x.done.toggle(); x.doneAt = x.done ? Date() : nil; store.upsert(x)
+                        } label: { Label(t.done ? "Yapılmadı say" : "Tamamlandı", systemImage: "checkmark.circle") }
+                        Button(role: .destructive) { store.delete(taskID: t.id) } label: { Label("Sil", systemImage: "trash") }
+                    }
             }
             ForEach(moments) { m in
                 Chip(icon: "sparkles", color: .cyan, text: "Anı: " + m.title)
@@ -578,6 +622,7 @@ private struct EventEditor: View {
     @State private var saving = false
     @State private var confirmDelete = false
     @State private var errorText: String?
+    @State private var copied: CalendarService.Event?
 
     init(event: CalendarService.Event) {
         self.event = event
@@ -631,8 +676,19 @@ private struct EventEditor: View {
                     .glassRow()
                 } else {
                     Section {
-                        Text("Bu takvim salt okunur (ör. abone olunan ya da paylaşılan takvim). Değiştirmek için takvimin sahibi olmalısın.")
+                        Text("Bu etkinlik salt okunur bir takvimde (ör. abone olunan ya da paylaşılan takvim), telefondan değiştirilemiyor.")
                             .font(.footnote).foregroundStyle(.white.opacity(0.6))
+                        Button {
+                            Task {
+                                guard let id = event.id else { return }
+                                if let newID = await CalendarService.shared.duplicate(id: id),
+                                   let copy = CalendarService.shared.event(id: newID) {
+                                    copied = copy
+                                } else { errorText = "Kopyalanamadı. Takvim iznini kontrol et." }
+                            }
+                        } label: {
+                            Label("Kendi takvimime kopyala ve düzenle", systemImage: "doc.on.doc")
+                        }
                     }
                     .glassRow()
                 }
@@ -667,6 +723,7 @@ private struct EventEditor: View {
             }
         }
         .presentationBackground(.clear)
+        .sheet(item: $copied, onDismiss: { dismiss() }) { c in EventEditor(event: c) }
     }
 
     private func shift(_ label: String, _ seconds: TimeInterval) -> some View {
@@ -692,6 +749,115 @@ private struct EventEditor: View {
 }
 
 // MARK: - Ekleme sayfaları
+
+private struct AddDay: Identifiable { let id = UUID(); let date: Date }
+
+/// Takvime etkinlik ya da Jarvis'e hatırlatma ekler
+private struct AddEventSheet: View {
+    @EnvironmentObject var store: Store
+    @Environment(\.dismiss) private var dismiss
+    @State private var kind = 0              // 0 etkinlik, 1 hatırlatma
+    @State private var title = ""
+    @State private var location = ""
+    @State private var allDay = false
+    @State private var start: Date
+    @State private var end: Date
+    @State private var calendarID: String = ""
+    @State private var priority: Priority = .normal
+    @State private var saving = false
+    @State private var errorText: String?
+    @State private var calendars: [CalendarService.CalendarInfo] = []
+
+    init(day: Date) {
+        let base = trCal.isDateInToday(day)
+            ? trCal.date(bySetting: .minute, value: 0, of: Date().addingTimeInterval(3600)) ?? Date()
+            : trCal.date(bySettingHour: 9, minute: 0, second: 0, of: day) ?? day
+        _start = State(initialValue: base)
+        _end = State(initialValue: base.addingTimeInterval(3600))
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Picker("Tür", selection: $kind) {
+                        Text("Takvim etkinliği").tag(0)
+                        Text("Hatırlatma").tag(1)
+                    }
+                    .pickerStyle(.segmented)
+                    TextField(kind == 0 ? "Başlık (ör. Dişçi randevusu)" : "Ne hatırlatayım?", text: $title)
+                    if kind == 0 { TextField("Yer (isteğe bağlı)", text: $location) }
+                }
+                .glassRow()
+                Section {
+                    if kind == 0 { Toggle("Tüm gün", isOn: $allDay) }
+                    DatePicker(kind == 0 ? "Başlangıç" : "Zaman", selection: $start,
+                               displayedComponents: (kind == 0 && allDay) ? DatePickerComponents.date : DatePickerComponents([.date, .hourAndMinute]))
+                        .environment(\.locale, trLocale)
+                        .onChange(of: start) { old, new in end = end.addingTimeInterval(new.timeIntervalSince(old)) }
+                    if kind == 0 && !allDay {
+                        DatePicker("Bitiş", selection: $end, in: start...)
+                            .environment(\.locale, trLocale)
+                    }
+                    if kind == 0 && calendars.count > 1 {
+                        Picker("Takvim", selection: $calendarID) {
+                            ForEach(calendars) { Text($0.title).tag($0.id) }
+                        }
+                    }
+                    if kind == 1 {
+                        Picker("Önem", selection: $priority) {
+                            ForEach(Priority.allCases) { Text($0.label).tag($0) }
+                        }
+                        .pickerStyle(.segmented)
+                    }
+                }
+                .glassRow()
+                if let errorText {
+                    Text(errorText).font(.footnote).foregroundStyle(.orange).listRowBackground(Color.clear)
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(Theme.background)
+            .navigationTitle(kind == 0 ? "Yeni etkinlik" : "Yeni hatırlatma")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Vazgeç") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Ekle") { save() }
+                        .bold()
+                        .disabled(saving || title.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+            .task {
+                await CalendarService.shared.requestAccess()
+                calendars = CalendarService.shared.writableCalendars()
+                calendarID = CalendarService.shared.defaultCalendarID ?? calendars.first?.id ?? ""
+            }
+        }
+        .presentationBackground(.clear)
+    }
+
+    private func save() {
+        let t = title.trimmingCharacters(in: .whitespaces)
+        if kind == 1 {
+            store.upsert(TaskItem(title: t, due: start, priority: priority))
+            Task { await Reminders.shared.requestPermission() }
+            dismiss()
+            return
+        }
+        saving = true
+        Task {
+            let s = allDay ? trCal.startOfDay(for: start) : start
+            let e = allDay ? trCal.date(byAdding: .day, value: 1, to: s) : end
+            let ok = await CalendarService.shared.add(title: t, start: s, end: e,
+                                                       location: location.isEmpty ? nil : location,
+                                                       important: false, allDay: allDay,
+                                                       calendarID: calendarID.isEmpty ? nil : calendarID)
+            saving = false
+            if ok { dismiss() } else { errorText = "Eklenemedi. Ayarlar → Gizlilik → Takvimler'den Jarvis'e tam erişim ver." }
+        }
+    }
+}
 
 private struct AddSpecialSheet: View {
     @EnvironmentObject var store: Store

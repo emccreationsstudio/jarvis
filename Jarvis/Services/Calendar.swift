@@ -93,12 +93,42 @@ final class CalendarService {
         }
     }
 
+    /// Etkinlik eklenebilen (yazılabilir) takvimler
+    struct CalendarInfo: Identifiable, Hashable { let id: String; let title: String }
+    func writableCalendars() -> [CalendarInfo] {
+        guard hasAccess else { return [] }
+        return store.calendars(for: .event)
+            .filter { $0.allowsContentModifications }
+            .map { CalendarInfo(id: $0.calendarIdentifier, title: $0.title) }
+    }
+    var defaultCalendarID: String? { store.defaultCalendarForNewEvents?.calendarIdentifier }
+
+    /// Salt okunur bir etkinliğin düzenlenebilir kopyasını varsayılan takvime ekler; yeni kimliği döner.
+    func duplicate(id: String) async -> String? {
+        guard await requestAccess(), let src = store.event(withIdentifier: id),
+              let cal = store.defaultCalendarForNewEvents else { return nil }
+        let e = EKEvent(eventStore: store)
+        e.calendar = cal
+        e.title = src.title
+        e.startDate = src.startDate
+        e.endDate = src.endDate
+        e.isAllDay = src.isAllDay
+        e.location = src.location
+        e.notes = src.notes
+        do { try store.save(e, span: .thisEvent); return e.eventIdentifier } catch { return nil }
+    }
+
     /// Takvime etkinlik ekler; başarılıysa true.
-    func add(title: String, start: Date, end: Date?, location: String?, important: Bool) async -> Bool {
-        guard await requestAccess(), let calendar = store.defaultCalendarForNewEvents else { return false }
+    func add(title: String, start: Date, end: Date?, location: String?, important: Bool,
+             allDay: Bool = false, calendarID: String? = nil) async -> Bool {
+        guard await requestAccess() else { return false }
+        let chosen = calendarID.flatMap { store.calendar(withIdentifier: $0) }
+        guard let calendar = (chosen?.allowsContentModifications == true ? chosen : nil) ?? store.defaultCalendarForNewEvents
+        else { return false }
         let event = EKEvent(eventStore: store)
         event.calendar = calendar
         event.title = title
+        event.isAllDay = allDay
         event.startDate = start
         event.endDate = end ?? start.addingTimeInterval(60 * 60)
         if let location, !location.isEmpty { event.location = location }
