@@ -2,12 +2,26 @@ import SwiftUI
 
 /// Listeler sekmesi: Görevler · Alışveriş · Aranacak + kullanıcının açtığı listeler (Eczane, Günlük ilaçlar…)
 /// Dokun → işaretle (silinmez) · Sola kaydır → çöp kutusuna (30 gün geri alınabilir)
+/// 1.2.5: toplu seçim durumu (Seç → dokunarak işaretle → Sil)
+@MainActor
+final class PickState: ObservableObject {
+    @Published var active = false
+    @Published var ids: Set<String> = []
+    func toggle(_ id: String) {
+        if ids.contains(id) { ids.remove(id) } else { ids.insert(id) }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+    func end() { active = false; ids = [] }
+}
+
 struct ListsView: View {
     @EnvironmentObject var store: Store
+    @StateObject private var pick = PickState()
+    @State private var confirmBulk = false
     @State private var selection = "tasks"
     @State private var creatingList = false
     @State private var showingTrash = false
-    @State private var undo: TrashEntry?
+    @State private var undo: [TrashEntry] = []
     @State private var undoTask: Task<Void, Never>?
 
     var body: some View {
@@ -15,6 +29,20 @@ struct ListsView: View {
             VStack(spacing: 12) {
                 HStack(alignment: .top) {
                     HUDTitle(text: "Listeler", subtitle: subtitle)
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            if pick.active { pick.end() } else { pick.active = true }
+                        }
+                    } label: {
+                        Text(pick.active ? "Bitti" : "Seç")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(pick.active ? Color.white : Theme.glow.opacity(0.9))
+                            .padding(.horizontal, 12).frame(height: 32)
+                            .background(Capsule().fill(pick.active ? Theme.accent : Theme.accent.opacity(0.15)))
+                            .padding(.top, 6)
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Toplu seçim")
                     Button { showingTrash = true } label: {
                         ZStack(alignment: .topTrailing) {
                             Image(systemName: "trash")
@@ -54,10 +82,17 @@ struct ListsView: View {
                     }
                 }
                 .transition(.opacity)
+                .environmentObject(pick)
             }
             .background(Theme.background)
             .toolbar(.hidden, for: .navigationBar)
-            .overlay(alignment: .bottom) { undoBanner }
+            .overlay(alignment: .bottom) { pick.active ? AnyView(pickBar) : AnyView(undoBanner) }
+            .confirmationDialog("\(pick.ids.count) kayıt silinsin mi?", isPresented: $confirmBulk, titleVisibility: .visible) {
+                Button("Sil", role: .destructive) { deletePicked() }
+            } message: {
+                Text("Hepsi çöp kutusuna gider, oradan geri alabilirsin.")
+            }
+            .onChange(of: selection) { _, _ in pick.end() }
             .sheet(isPresented: $creatingList) {
                 NewListSheet { id in selection = id }
             }
@@ -78,27 +113,85 @@ struct ListsView: View {
         return "\(store.openTasks.count) görev · \(shop) ürün · \(calls) arama"
     }
 
+    /// Bu sekmedeki tüm kayıtların kimlikleri (Tümünü seç)
+    private var allIDs: [String] {
+        switch selection {
+        case "tasks": return (store.openTasks + store.doneToday).map(\.id)
+        case "shopping": return store.shopping.map(\.id)
+        case "calls": return store.calls.map(\.id)
+        default: return store.lists.first(where: { $0.id == selection })?.items.map(\.id) ?? []
+        }
+    }
+
+    private func deletePicked() {
+        let ids = pick.ids
+        guard !ids.isEmpty else { return }
+        switch selection {
+        case "tasks": ids.forEach { store.delete(taskID: $0) }
+        case "shopping": ids.forEach { store.trashShopping(id: $0) }
+        case "calls": ids.forEach { store.trashCall(id: $0) }
+        default: ids.forEach { store.trashListItem(listID: selection, itemID: $0) }
+        }
+        withAnimation { pick.end() }
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        showUndo(count: ids.count)
+    }
+
+    @ViewBuilder private var pickBar: some View {
+        let all = allIDs
+        let n = pick.ids.count
+        HStack(spacing: 10) {
+            Text(n == 0 ? "Seçmek için dokun" : "\(n) seçili")
+                .font(.subheadline.weight(.semibold)).foregroundStyle(.white)
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            Button(!all.isEmpty && all.allSatisfy { pick.ids.contains($0) } ? "Hiçbiri" : "Tümü") {
+                if !all.isEmpty && all.allSatisfy({ pick.ids.contains($0) }) { pick.ids = [] } else { pick.ids = Set(all) }
+            }
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(Theme.glow)
+            .buttonStyle(.borderless)
+            Button { confirmBulk = true } label: {
+                Label(n == 0 ? "Sil" : "Sil (\(n))", systemImage: "trash")
+                    .font(.subheadline.weight(.bold))
+                    .padding(.horizontal, 12).padding(.vertical, 7)
+                    .background(Capsule().fill(Color.red.opacity(n == 0 ? 0.3 : 0.85)))
+                    .foregroundStyle(.white)
+            }
+            .buttonStyle(.borderless)
+            .disabled(n == 0)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 10)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().stroke(Theme.cardStroke, lineWidth: 1))
+        .padding(.horizontal, 16)
+        .padding(.bottom, 12 + TalkView.floatingTabBarClearance)
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+
     /// Silindikten sonra 5 sn "Geri al" şeridi
-    private func showUndo() {
+    private func showUndo() { showUndo(count: 1) }
+
+    private func showUndo(count: Int) {
         undoTask?.cancel()
-        withAnimation(.spring(response: 0.3)) { undo = store.trash.first }
+        withAnimation(.spring(response: 0.3)) { undo = Array(store.trash.prefix(max(1, count))) }
         undoTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 5_000_000_000)
             guard !Task.isCancelled else { return }
-            withAnimation { undo = nil }
+            withAnimation { undo = [] }
         }
     }
 
     @ViewBuilder private var undoBanner: some View {
-        if let entry = undo {
+        if let entry = undo.first {
             HStack(spacing: 12) {
                 Image(systemName: "trash").foregroundStyle(.white.opacity(0.7))
-                Text("“\(entry.title)” silindi").lineLimit(1).foregroundStyle(.white)
+                Text(undo.count > 1 ? "\(undo.count) kayıt silindi" : "“\(entry.title)” silindi").lineLimit(1).foregroundStyle(.white)
                 Spacer(minLength: 8)
                 Button("Geri al") {
-                    store.restore(entry)
+                    for e in undo { store.restore(e) }
                     UINotificationFeedbackGenerator().notificationOccurred(.success)
-                    withAnimation { undo = nil }
+                    withAnimation { undo = [] }
                 }
                 .font(.subheadline.weight(.bold))
                 .foregroundStyle(Theme.glow)
@@ -272,19 +365,30 @@ private struct HUDList<Content: View>: View {
 
 /// İşaretlenebilir satır: dokun → işaretle / işareti kaldır
 private struct CheckRow<Trailing: View>: View {
+    @EnvironmentObject var pick: PickState
     let title: String
     var subtitle: String? = nil
     let done: Bool
     var color: Color = Theme.glow
+    var pickID: String? = nil
     let onToggle: () -> Void
     @ViewBuilder var trailing: Trailing
 
+    private var picking: Bool { pick.active && pickID != nil }
+    private var picked: Bool { picking && pick.ids.contains(pickID!) }
+
     var body: some View {
         HStack(spacing: 12) {
+            if picking {
+                Image(systemName: picked ? "checkmark.square.fill" : "square")
+                    .font(.title3)
+                    .foregroundStyle(picked ? Theme.accent : .white.opacity(0.6))
+            }
             Image(systemName: done ? "checkmark.circle.fill" : "circle")
                 .font(.title3)
                 .foregroundStyle(done ? Color.green : color)
                 .contentTransition(.symbolEffect(.replace))
+                .opacity(picking ? 0.5 : 1)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .strikethrough(done, color: .white.opacity(0.5))
@@ -299,6 +403,7 @@ private struct CheckRow<Trailing: View>: View {
         .padding(.vertical, 4)
         .contentShape(Rectangle())
         .onTapGesture {
+            if picking, let id = pickID { pick.toggle(id); return }
             withAnimation(.easeInOut(duration: 0.2)) { onToggle() }
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
         }
@@ -306,8 +411,10 @@ private struct CheckRow<Trailing: View>: View {
 }
 
 extension CheckRow where Trailing == EmptyView {
-    init(title: String, subtitle: String? = nil, done: Bool, color: Color = Theme.glow, onToggle: @escaping () -> Void) {
-        self.init(title: title, subtitle: subtitle, done: done, color: color, onToggle: onToggle, trailing: { EmptyView() })
+    init(title: String, subtitle: String? = nil, done: Bool, color: Color = Theme.glow, pickID: String? = nil,
+         onToggle: @escaping () -> Void) {
+        self.init(title: title, subtitle: subtitle, done: done, color: color, pickID: pickID, onToggle: onToggle,
+                  trailing: { EmptyView() })
     }
 }
 
@@ -381,10 +488,16 @@ private struct TasksList: View {
 
 private struct TaskRow: View {
     @EnvironmentObject var store: Store
+    @EnvironmentObject var pick: PickState
     let task: TaskItem
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
+            if pick.active {
+                Image(systemName: pick.ids.contains(task.id) ? "checkmark.square.fill" : "square")
+                    .font(.title3)
+                    .foregroundStyle(pick.ids.contains(task.id) ? Theme.accent : .white.opacity(0.6))
+            }
             // Önem rengi: ışıklı şerit
             Capsule()
                 .fill(Theme.color(for: task.priority))
@@ -419,6 +532,7 @@ private struct TaskRow: View {
         .padding(.vertical, 4)
         .contentShape(Rectangle())
         .onTapGesture {
+            if pick.active { pick.toggle(task.id); return }
             withAnimation(.easeInOut(duration: 0.2)) { store.toggle(taskID: task.id) }
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
         }
@@ -534,7 +648,7 @@ private struct ShoppingList: View {
                         .glassRow()
                 }
                 ForEach(store.openShopping) { item in
-                    CheckRow(title: item.name, done: false) { store.toggleShopping(id: item.id) }
+                    CheckRow(title: item.name, done: false, pickID: item.id) { store.toggleShopping(id: item.id) }
                         .swipeActions { trashButton(item) }
                         .glassRow()
                 }
@@ -548,7 +662,7 @@ private struct ShoppingList: View {
             if !done.isEmpty {
                 Section {
                     ForEach(done) { item in
-                        CheckRow(title: item.name, done: true) { store.toggleShopping(id: item.id) }
+                        CheckRow(title: item.name, done: true, pickID: item.id) { store.toggleShopping(id: item.id) }
                             .swipeActions { trashButton(item) }
                             .glassRow()
                     }
@@ -618,7 +732,7 @@ private struct CallsList: View {
     }
 
     private func row(_ call: CallItem) -> some View {
-        CheckRow(title: call.person, subtitle: call.reason, done: call.done, color: .green) {
+        CheckRow(title: call.person, subtitle: call.reason, done: call.done, color: .green, pickID: call.id) {
             store.toggleCall(id: call.id)
         } trailing: {
             Button {
@@ -724,7 +838,7 @@ private struct CustomListView: View {
     }
 
     private func itemRow(_ item: ListItem, list: CustomList) -> some View {
-        CheckRow(title: item.text, done: item.done) {
+        CheckRow(title: item.text, done: item.done, pickID: item.id) {
             store.toggleListItem(listID: list.id, itemID: item.id)
         }
         .swipeActions {

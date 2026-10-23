@@ -46,7 +46,10 @@ struct JarvisShortcuts: AppShortcutsProvider {
                 "\(.applicationName)",
                 "Hey \(.applicationName)",
                 "\(.applicationName) dinle",
-                "\(.applicationName)'i aç"
+                "\(.applicationName)'i aç",
+                "\(.applicationName)'i çağır",
+                "\(.applicationName) uyan",
+                "Merhaba \(.applicationName)"
             ],
             shortTitle: "Jarvis'i Dinlet",
             systemImageName: "waveform.circle.fill"

@@ -127,6 +127,20 @@ final class Assistant: ObservableObject {
         }
     }
 
+    /// 1.2.5: "Dinlemeyi bırak" düğmesi — mikrofon kapanır, uygulama açık kalır, yazarak devam edilir.
+    /// Söylenmiş ama işlenmemiş cümle varsa kaybolmaz, işlenir.
+    func stopListeningButton() {
+        let partial = speech.partialText.trimmingCharacters(in: .whitespacesAndNewlines)
+        speech.stopMic()
+        if !partial.isEmpty { pendingNotes.append(VoiceCommand.parse(NumberWords.normalize(partial)).body) }
+        if conversing {
+            // önce sohbeti kapat ki "Efendim?" bitince mikrofon yeniden açılmasın
+            if pendingNotes.isEmpty { endConversation() } else { finish(close: true) }
+        }
+        if phase == .speaking && pendingNotes.isEmpty { speech.stopSpeaking() }
+        if phase == .listening || (phase == .speaking && !speech.isSpeaking) { phase = .idle }
+    }
+
     /// Uygulama arka plana gitti → mikrofonu bırak
     func appWentBackground() {
         guard conversing else { return }

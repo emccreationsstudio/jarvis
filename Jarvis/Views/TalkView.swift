@@ -146,6 +146,21 @@ struct TalkView: View {
                                 .multilineTextAlignment(.center)
                                 .padding(.bottom, 6)
                         }
+                        // 1.2.5: açılır açılmaz dinliyor; elle yazmak isteyince tek dokunuşla dinlemeyi bırak
+                        if assistant.conversing || assistant.speech.isListening {
+                            Button { assistant.stopListeningButton() } label: {
+                                Label("Dinlemeyi bırak", systemImage: "mic.slash.fill")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 18).padding(.vertical, 9)
+                                    .background(Color.orange.opacity(0.28), in: Capsule())
+                                    .overlay(Capsule().stroke(Color.orange.opacity(0.7), lineWidth: 1))
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.bottom, 8)
+                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                            .accessibilityLabel("Dinlemeyi bırak, yazarak devam et")
+                        }
                         inputBar
                             // Klavye açıkken hemen klavyenin üstünde; kapalıyken sekme çubuğunun üstünde
                             .padding(.bottom, keyboard.height > 0

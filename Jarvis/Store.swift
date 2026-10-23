@@ -526,6 +526,21 @@ final class Store: ObservableObject {
         let limit = Date().addingTimeInterval(-30 * 86400)
         if trash.contains(where: { $0.deletedAt < limit }) { trash.removeAll { $0.deletedAt < limit } }
         resetDailyLists()
+        clearYesterdaysDone()
+    }
+
+    /// 1.2.5: Üstü çizilen (tamamlanan) görevler ertesi gün kendiliğinden çöp kutusuna gider.
+    /// Gün içinde işaret kaldırılırsa görev kalır.
+    func clearYesterdaysDone() {
+        let start = Calendar.current.startOfDay(for: Date())
+        let old = tasks.filter { $0.done && ($0.doneAt ?? $0.createdAt) < start }
+        guard !old.isEmpty else { return }
+        var t = trash
+        for task in old { t.insert(TrashEntry(kind: .task, task: task), at: 0) }
+        if t.count > 300 { t = Array(t.prefix(300)) }
+        trash = t
+        let ids = Set(old.map(\.id))
+        tasks.removeAll { ids.contains($0.id) }
     }
 }
 

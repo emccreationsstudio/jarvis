@@ -1,5 +1,6 @@
 import SwiftUI
 import UserNotifications
+import AppIntents
 
 final class AppDelegate: NSObject, UIApplicationDelegate {
     let notificationDelegate = NotificationDelegate()
@@ -11,6 +12,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             Reminders.shared.scheduleHolidays()
             Reminders.shared.scheduleMorningBrief()
         }
+        // 1.2.5: "Hey Siri, Jarvis" kısayolunu her açılışta Siri'ye yeniden bildir
+        // (güncellemeden sonra Siri bazen kısayolu unutuyordu)
+        JarvisShortcuts.updateAppShortcutParameters()
         return true
     }
 }
