@@ -33,7 +33,7 @@ final class SyncService {
     private static let fShop = ["name", "done"]
     private static let fCall = ["person", "reason", "done"]
     private static let fMem = ["text"]
-    private static let fList = ["name", "daily"]
+    private static let fList = ["name", "daily", "lastReset"]
     private static let fItem = ["text", "done"]
     private static let dateKeys: Set<String> = ["due", "doneAt", "createdAt"]
 
@@ -284,6 +284,10 @@ final class SyncService {
                 if lc && !rc { item.merge(li) { _, new in new } }
                 if let n = nested {
                     item[n.0] = merge(b[id]?[n.0], li[n.0], ri[n.0], n.1, nested: nil)
+                    // 1.2.6: günlük listenin son sıfırlanma günü daima en yenisi olsun; eski tarih gelirse
+                    // uygulama "yeni gün" sanıp içilen ilaçların işaretini kaldırıyordu
+                    let lr = max(li["lastReset"] as? String ?? "", ri["lastReset"] as? String ?? "")
+                    if !lr.isEmpty { item["lastReset"] = lr }
                 }
                 out.append(item)
             } else if let li = l[id] {
