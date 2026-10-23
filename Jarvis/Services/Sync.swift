@@ -165,7 +165,8 @@ final class SyncService {
             }
             let stamp = Self.isoFrac.string(from: stampDate)
             merged["updatedAt"] = stamp
-            guard let body = try? JSONSerialization.data(withJSONObject: ["updatedAt": stamp, "data": merged]) else {
+            let payload: JSON = ["updatedAt": stamp, "data": merged]
+            guard let body = try? JSONSerialization.data(withJSONObject: payload) else {
                 lastStatus = "Gönderilecek veri hazırlanamadı"
                 return lastStatus
             }
