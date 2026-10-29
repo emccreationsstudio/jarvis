@@ -8,7 +8,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "1.2.6"
+    MARKETING_VERSION: "1.2.7"
     CURRENT_PROJECT_VERSION: "1"
     VERSIONING_SYSTEM: apple-generic
 targets:
@@ -47,5 +47,7 @@ targets:
         NSCalendarsFullAccessUsageDescription: Jarvis gününüzü planlarken takviminizi okur ve istediğinizde etkinlik ekler.
         NSCalendarsUsageDescription: Jarvis gününüzü planlarken takviminizi okur ve istediğinizde etkinlik ekler.
         NSLocationWhenInUseUsageDescription: Rota ve trafik süresini bulunduğunuz yerden hesaplamak için konum kullanılır.
+        NSCameraUsageDescription: Jarvis'e fotoğraf çekip gönderebilmeniz için kamera kullanılır.
+        NSPhotoLibraryUsageDescription: Jarvis'e galeriden fotoğraf ve video gönderebilmeniz için kullanılır.
         NSContactsUsageDescription: Aranacaklar listesindeki kişiyi rehberinizde bulup tek dokunuşla aramak için kullanılır.
         NSAlarmKitUsageDescription: Kritik hatırlatmalarda telefonunuz alarm gibi çalar.

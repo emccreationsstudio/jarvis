@@ -343,4 +343,16 @@ await test("telefondan bilgisayara komut kuyruğu", async () => {
   assert.equal(res.reply, "Spotify açıldı efendim.");
 });
 
+await test("ekler: belge, konum ve resim", async () => {
+  await worker.fetch(req("/chat", { message: "bunu incele", context: {},
+    images: ["data:image/jpeg;base64,/9j/4AAQ"], document: "EKLİ BELGE: teklif.pdf\nToplam: 12.000 TL" }), env);
+  const content = lastPayload.input[lastPayload.input.length - 1].content;
+  assert.ok(Array.isArray(content));
+  assert.ok(content[0].text.includes("EKLER") && content[0].text.includes("Toplam: 12.000 TL"));
+  assert.ok(content[0].text.includes("1 resim"));
+  await worker.fetch(req("/chat", { message: "konumum", context: {}, document: "KULLANICININ PAYLAŞTIĞI KONUM: Üsküdar" }), env);
+  const last = lastPayload.input[lastPayload.input.length - 1].content;
+  assert.ok(typeof last === "string" && last.includes("Üsküdar"));
+});
+
 console.log(`\n${n} test geçti`);

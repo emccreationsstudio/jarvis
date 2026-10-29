@@ -252,6 +252,9 @@ struct ChatRequest: Encodable {
     let context: Context
     /// Mesaj sesle mi söylendi (sunucu yanlış duyulmuş sözcükleri düzeltmeye çalışır)
     var voice: Bool = false
+    /// 1.2.7: ekli resimler (data:image/jpeg;base64,...) ve belge/konum/kişi metni
+    var images: [String]? = nil
+    var document: String? = nil
 }
 
 struct ChatResponse: Decodable {

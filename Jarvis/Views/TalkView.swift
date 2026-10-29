@@ -1,4 +1,7 @@
 import SwiftUI
+import PhotosUI
+import ContactsUI
+import UniformTypeIdentifiers
 
 struct RootView: View {
     @EnvironmentObject var assistant: Assistant
@@ -86,6 +89,13 @@ struct TalkView: View {
     @EnvironmentObject var assistant: Assistant
     @State private var input = ""
     @FocusState private var typing: Bool
+    // 1.2.7: ekler (WhatsApp'taki + menüsü)
+    @State private var attachMenu = false
+    @State private var showPhotos = false
+    @State private var photoItems: [PhotosPickerItem] = []
+    @State private var showFiles = false
+    @State private var showCamera = false
+    @State private var attaching = false
     @StateObject private var keyboard = KeyboardObserver()
 
     /// Bu açılışta konuşulanlar (eski sohbet ekranda görünmez ama Jarvis hatırlar)
@@ -161,6 +171,7 @@ struct TalkView: View {
                             .transition(.opacity.combined(with: .move(edge: .bottom)))
                             .accessibilityLabel("Dinlemeyi bırak, yazarak devam et")
                         }
+                        if !assistant.pending.isEmpty || attaching { pendingRow }
                         inputBar
                             // Klavye açıkken hemen klavyenin üstünde; kapalıyken sekme çubuğunun üstünde
                             .padding(.bottom, keyboard.height > 0
@@ -330,19 +341,111 @@ struct TalkView: View {
         }
     }
 
+    /// Gönderilmeyi bekleyen ekler (yazı alanının hemen üstünde)
+    private var pendingRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(assistant.pending) { a in
+                    HStack(spacing: 6) {
+                        Image(systemName: a.icon).font(.caption.weight(.semibold))
+                        Text(a.label).font(.caption.weight(.semibold)).lineLimit(1)
+                        Button { assistant.pending.removeAll { $0.id == a.id } } label: {
+                            Image(systemName: "xmark.circle.fill").font(.caption)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Eki kaldır")
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 10).padding(.vertical, 7)
+                    .background(Theme.accent.opacity(0.28), in: Capsule())
+                    .overlay(Capsule().stroke(Theme.glow.opacity(0.5), lineWidth: 1))
+                }
+                if attaching {
+                    ProgressView().tint(Theme.glow).padding(.horizontal, 6)
+                }
+            }
+            .padding(.horizontal, 4)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.bottom, 6)
+    }
+
+    private func add(_ a: Attachment?) {
+        if let a { assistant.pending.append(a) } else { assistant.errorText = "Bu ek okunamadı." }
+    }
+
+    private func loadPhotos(_ items: [PhotosPickerItem]) {
+        guard !items.isEmpty else { return }
+        attaching = true
+        Task { @MainActor in
+            for item in items {
+                if item.supportedContentTypes.contains(where: { $0.conforms(to: .movie) }),
+                   let movie = try? await item.loadTransferable(type: PickedMovie.self) {
+                    add(await AttachmentMaker.video(movie.url))
+                } else if let data = try? await item.loadTransferable(type: Data.self), let img = UIImage(data: data) {
+                    add(AttachmentMaker.image(img))
+                } else {
+                    add(nil)
+                }
+            }
+            photoItems = []
+            attaching = false
+        }
+    }
+
     private var inputBar: some View {
         HStack(spacing: 10) {
             Button {
-                typing.toggle()   // klavyeyi aç / kapat
+                attachMenu = true   // fotoğraf, kamera, belge, konum, kişi
             } label: {
-                Image(systemName: typing ? "keyboard.chevron.compact.down" : "keyboard")
-                    .font(.system(size: 16, weight: .medium))
+                Image(systemName: "plus")
+                    .font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(Theme.glow)
                     .frame(width: 34, height: 34)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(typing ? "Klavyeyi kapat" : "Klavyeyi aç")
+            .accessibilityLabel("Ek ekle: fotoğraf, belge, konum, kişi")
+            .confirmationDialog("Jarvis'e gönder", isPresented: $attachMenu, titleVisibility: .visible) {
+                Button("Fotoğraf ve video") { showPhotos = true }
+                if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                    Button("Kamera") { showCamera = true }
+                }
+                Button("Belge") { showFiles = true }
+                Button("Konumum") {
+                    attaching = true
+                    Task { @MainActor in
+                        let a = await AttachmentMaker.location()
+                        if a == nil { assistant.errorText = "Konum alınamadı. Ayarlar → Jarvis → Konum iznini kontrol et." }
+                        else { add(a) }
+                        attaching = false
+                    }
+                }
+                Button("Kişi") {
+                    ContactPresenter.shared.pick { c in if let c { add(AttachmentMaker.contact(c)) } }
+                }
+                Button("Vazgeç", role: .cancel) {}
+            }
+            .photosPicker(isPresented: $showPhotos, selection: $photoItems, maxSelectionCount: 3,
+                          matching: .any(of: [.images, .videos]))
+            .onChange(of: photoItems) { _, items in loadPhotos(items) }
+            .fileImporter(isPresented: $showFiles, allowedContentTypes: AttachmentMaker.documentTypes,
+                          allowsMultipleSelection: true) { result in
+                guard case .success(let urls) = result else { return }
+                attaching = true
+                Task { @MainActor in
+                    for url in urls.prefix(3) { add(await AttachmentMaker.document(url)) }
+                    attaching = false
+                }
+            }
+            .fullScreenCover(isPresented: $showCamera) {
+                CameraPicker { img in
+                    showCamera = false
+                    if let img { add(AttachmentMaker.image(img, label: "Kamera")) }
+                }
+                .ignoresSafeArea()
+            }
+
             TextField("", text: $input, prompt: Text("Jarvis'e yaz…").foregroundColor(.white.opacity(0.45)), axis: .vertical)
                 .lineLimit(1...4)
                 .focused($typing)
@@ -390,7 +493,8 @@ struct TalkView: View {
     }
 
     private var canSend: Bool {
-        !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && assistant.phase != .thinking
+        (!input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !assistant.pending.isEmpty)
+            && assistant.phase != .thinking && !attaching
     }
 
     private func sendTyped() {
@@ -594,5 +698,57 @@ struct OrbButton: View {
         case .thinking: return 0.5
         case .idle: return 0.3
         }
+    }
+}
+
+
+// MARK: - 1.2.7 kamera ve kişi seçici
+
+struct CameraPicker: UIViewControllerRepresentable {
+    let done: (UIImage?) -> Void
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let p = UIImagePickerController()
+        p.sourceType = .camera
+        p.delegate = context.coordinator
+        return p
+    }
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+    func makeCoordinator() -> Coordinator { Coordinator(done: done) }
+
+    final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let done: (UIImage?) -> Void
+        init(done: @escaping (UIImage?) -> Void) { self.done = done }
+        func imagePickerController(_ picker: UIImagePickerController,
+                                   didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
+            done(info[.originalImage] as? UIImage)
+        }
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) { done(nil) }
+    }
+}
+
+/// Rehberden kişi seçici: en üstteki ekrandan doğrudan sunulur (izin gerektirmez)
+@MainActor
+final class ContactPresenter: NSObject, CNContactPickerDelegate {
+    static let shared = ContactPresenter()
+    private var done: ((CNContact?) -> Void)?
+
+    func pick(_ done: @escaping (CNContact?) -> Void) {
+        self.done = done
+        guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
+              var top = scene.windows.first(where: \.isKeyWindow)?.rootViewController else { done(nil); return }
+        while let next = top.presentedViewController { top = next }
+        let picker = CNContactPickerViewController()
+        picker.delegate = self
+        // menü kapanırken sunulursa açılmayabiliyor → kısa gecikme
+        let presenter = top
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { presenter.present(picker, animated: true) }
+    }
+
+    nonisolated func contactPicker(_ picker: CNContactPickerViewController, didSelect contact: CNContact) {
+        Task { @MainActor in self.done?(contact); self.done = nil }
+    }
+    nonisolated func contactPickerDidCancel(_ picker: CNContactPickerViewController) {
+        Task { @MainActor in self.done?(nil); self.done = nil }
     }
 }

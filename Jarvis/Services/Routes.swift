@@ -40,6 +40,30 @@ final class RouteService: NSObject, CLLocationManagerDelegate {
         return (lat, lon)
     }
 
+    /// 1.2.7: konum paylaşımı için hassas konum (en fazla 8 sn bekler; olmazsa son bilinen konum)
+    func preciseLocation() async -> CLLocation? {
+        guard hasLocation else { return nil }
+        let fallback = location.location
+        let found: CLLocation? = await withTaskGroup(of: CLLocation?.self) { group in
+            group.addTask {
+                do {
+                    for try await update in CLLocationUpdate.liveUpdates() {
+                        if let l = update.location, l.horizontalAccuracy > 0, l.horizontalAccuracy < 80 { return l }
+                    }
+                } catch {}
+                return nil
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+        return found ?? fallback
+    }
+
     /// Uygulama açılınca konumu bir kez tazele
     func refreshLocation() {
         guard hasLocation else { return }

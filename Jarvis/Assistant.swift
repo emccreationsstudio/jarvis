@@ -15,6 +15,8 @@ final class Assistant: ObservableObject {
     @Published var errorText: String?
     /// Siri / Kısayol / Arkaya Dokunma ile açılınca dinlemeye başla
     @Published var listenRequested = false
+    /// 1.2.7: gönderilmeyi bekleyen ekler (fotoğraf, belge, konum, kişi)
+    @Published var pending: [Attachment] = []
     /// Jarvis "takvimi göster" dediğinde açılacak sayfa
     @Published var calendarRequest: CalendarPage?
     /// Sabah özeti bildirimine dokunuldu → açılınca özeti oku
@@ -245,6 +247,7 @@ final class Assistant: ObservableObject {
     private var inflight: Task<Void, Never>?
     private var inflightText: String?
     private var inflightMessageID: String?
+    private var inflightAttachments: [Attachment] = []
 
     private func handleSegment(_ segment: String) {
         guard conversing else { return }
@@ -260,6 +263,7 @@ final class Assistant: ObservableObject {
             if let id = inflightMessageID { store.messages.removeAll { $0.id == id } }
             inflightMessageID = nil
             pendingNotes.insert(prev, at: 0)
+            if !inflightAttachments.isEmpty { pending = inflightAttachments + pending; inflightAttachments = [] }
             phase = .listening
         }
 
@@ -318,12 +322,22 @@ final class Assistant: ObservableObject {
     // MARK: Gönder
 
     func send(_ raw: String, voice: Bool = false) {
-        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let attachments = pending
+        guard !text.isEmpty || !attachments.isEmpty else { return }
+        pending = []
+        if text.isEmpty {
+            text = attachments.contains { $0.kind == .location } && attachments.count == 1
+                ? "Konumumu paylaşıyorum." : "Bunu incele ve kısaca ne olduğunu söyle."
+        }
+        let images = Array(attachments.flatMap(\.images).prefix(3))
+        let docText = attachments.compactMap(\.text).joined(separator: "\n\n")
         errorText = nil
         lastRoute = nil
         inflight?.cancel()
-        let message = ChatMessage(role: .user, text: text)
+        let shown = attachments.isEmpty ? text
+            : attachments.map { "📎 \($0.label)" }.joined(separator: "\n") + "\n" + text
+        let message = ChatMessage(role: .user, text: shown)
         store.messages.append(message)
         if conversing { idleTask?.cancel() }   // mikrofon açık kalır: araya girilebilir
 
@@ -335,10 +349,13 @@ final class Assistant: ObservableObject {
         phase = .thinking
         inflightText = text
         inflightMessageID = message.id
+        inflightAttachments = attachments
         inflight = Task { [weak self] in
             guard let self else { return }
             do {
-                let response = try await self.request(text, voice: voice)
+                let response = try await self.request(text, voice: voice,
+                                                      images: images.isEmpty ? nil : images,
+                                                      document: docText.isEmpty ? nil : docText)
                 guard !Task.isCancelled else { return }
                 self.inflightText = nil
                 self.inflightMessageID = nil
@@ -388,7 +405,8 @@ final class Assistant: ObservableObject {
         var errorDescription: String? { message }
     }
 
-    private func request(_ text: String, voice: Bool = false) async throws -> ChatResponse {
+    private func request(_ text: String, voice: Bool = false, images: [String]? = nil,
+                         document: String? = nil) async throws -> ChatResponse {
         let base = settings.serverURL.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let url = URL(string: base + "/chat") else { throw ServerError(message: "Sunucu adresi geçersiz.") }
 
@@ -396,9 +414,11 @@ final class Assistant: ObservableObject {
         let today = Calendar.current.startOfDay(for: Date())
         let history = store.messages.dropLast().filter { $0.date >= today }.suffix(12)
             .map { ChatRequest.HistoryItem(role: $0.role.rawValue, content: $0.text) }
-        let body = ChatRequest(message: text, history: Array(history), context: context(), voice: voice)
+        var body = ChatRequest(message: text, history: Array(history), context: context(), voice: voice)
+        body.images = images
+        body.document = document
 
-        var req = URLRequest(url: url, timeoutInterval: 60)
+        var req = URLRequest(url: url, timeoutInterval: images == nil ? 60 : 120)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("Bearer \(settings.token)", forHTTPHeaderField: "Authorization")
