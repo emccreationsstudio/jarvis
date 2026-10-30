@@ -226,6 +226,7 @@ struct SettingsView: View {
                     .glassRow()
 
                     Section {
+                        Toggle("Günün ilk açılışında özet", isOn: $settings.autoBrief)
                         Toggle("Sabah özeti", isOn: $settings.morningBrief)
                         if settings.morningBrief {
                             DatePicker("Saat", selection: Binding(

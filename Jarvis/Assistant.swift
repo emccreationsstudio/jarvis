@@ -21,7 +21,7 @@ final class Assistant: ObservableObject {
     @Published var calendarRequest: CalendarPage?
     /// Sabah özeti bildirimine dokunuldu → açılınca özeti oku
     @Published var briefRequested = false
-    static let briefPrompt = "Günaydın Jarvis, sabah özetimi ver: hava durumu, bugünkü takvimim ve görevlerim, Türkiye ve dünyadan önemli haberler."
+    static let briefPrompt = "Günün özetini ver: hava durumu, bugünkü programım (takvim ve hatırlatmalar), trafik, bu haftanın önemli işleri (önümüzdeki 7 gün, en fazla 3 tane, gün adıyla), Türkiye'den 3 ve dünyadan 2 önemli haber. Sesli okunacak; akıcı ve kısa anlat."
 
     let speech = SpeechService()
     private let store = Store.shared
@@ -104,12 +104,20 @@ final class Assistant: ObservableObject {
         RouteService.shared.refreshLocation()      // hava durumu için yaklaşık konum
         lastRoute = nil
         errorText = nil
-        if briefRequested {
+        // 1.2.8: günün ilk açılışında (05:00'ten sonra) kendiliğinden günün özeti; gün içindeki diğer açılışlarda değil
+        let today = DateText.dayKey(Date())
+        let firstToday = settings.autoBrief && Calendar.current.component(.hour, from: Date()) >= 5
+            && UserDefaults.standard.string(forKey: "autoBriefDay") != today
+        if briefRequested || firstToday {
             briefRequested = false
             listenRequested = false
             guard UserDefaults.standard.bool(forKey: "didOnboard") else { return }
+            UserDefaults.standard.set(today, forKey: "autoBriefDay")
             if conversing { endConversation() }
-            send(Self.briefPrompt, voice: true)
+            Task { @MainActor in
+                let traffic = await self.trafficLine()
+                self.send(Self.briefPrompt + (traffic.map { "\nTRAFİK: " + $0 } ?? ""), voice: true, display: "Günün özeti")
+            }
             return
         }
         let wanted = listenRequested || settings.autoListen
@@ -321,7 +329,22 @@ final class Assistant: ObservableObject {
 
     // MARK: Gönder
 
-    func send(_ raw: String, voice: Bool = false) {
+    /// Bugün yeri belli olan ilk (henüz başlamamış) randevuya canlı trafikle gidiş süresi (Apple Haritalar)
+    private func trafficLine() async -> String? {
+        let now = Date()
+        guard let ev = CalendarService.shared.upcoming(days: 1).first(where: {
+            $0.start > now && !($0.location ?? "").trimmingCharacters(in: .whitespaces).isEmpty
+        }), let loc = ev.location else {
+            return "Bugün yeri belli bir randevu yok; genel İstanbul trafiğini kısaca söyle (biliyorsan)."
+        }
+        let time = ev.start.formatted(date: .omitted, time: .shortened)
+        guard let r = await RouteService.shared.route(from: nil, to: loc) else {
+            return "\(time) \(ev.title) (\(loc)) için yol süresi hesaplanamadı."
+        }
+        return "\(time) \(ev.title) randevusu için: \(r.summary). Ne zaman çıkması gerektiğini öner."
+    }
+
+    func send(_ raw: String, voice: Bool = false, display: String? = nil) {
         var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = pending
         guard !text.isEmpty || !attachments.isEmpty else { return }
@@ -335,8 +358,9 @@ final class Assistant: ObservableObject {
         errorText = nil
         lastRoute = nil
         inflight?.cancel()
-        let shown = attachments.isEmpty ? text
-            : attachments.map { "📎 \($0.label)" }.joined(separator: "\n") + "\n" + text
+        let shownText = display ?? text
+        let shown = attachments.isEmpty ? shownText
+            : attachments.map { "📎 \($0.label)" }.joined(separator: "\n") + "\n" + shownText
         let message = ChatMessage(role: .user, text: shown)
         store.messages.append(message)
         if conversing { idleTask?.cancel() }   // mikrofon açık kalır: araya girilebilir

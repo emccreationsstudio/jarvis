@@ -607,6 +607,8 @@ final class AppSettings: ObservableObject {
     @Published var morningBriefMinutes: Int { didSet { UserDefaults.standard.set(morningBriefMinutes, forKey: "morningBriefMinutes"); Reminders.shared.scheduleMorningBrief() } }
     /// Yol tarifinde açılacak harita: apple · google · yandex
     @Published var mapsApp: String { didSet { UserDefaults.standard.set(mapsApp, forKey: "mapsApp") } }
+    /// 1.2.8: günün ilk açılışında hava, program, trafik, haftanın önemli işleri ve haberler
+    @Published var autoBrief: Bool { didSet { UserDefaults.standard.set(autoBrief, forKey: "autoBrief") } }
 
     private init() {
         let d = UserDefaults.standard
@@ -625,6 +627,7 @@ final class AppSettings: ObservableObject {
         morningBrief = d.object(forKey: "morningBrief") as? Bool ?? false
         morningBriefMinutes = d.object(forKey: "morningBriefMinutes") as? Int ?? 8 * 60
         mapsApp = d.string(forKey: "mapsApp") ?? "apple"
+        autoBrief = d.object(forKey: "autoBrief") as? Bool ?? true
         token = Keychain.get("appToken") ?? ""
     }
 
