@@ -21,7 +21,7 @@ final class Assistant: ObservableObject {
     @Published var calendarRequest: CalendarPage?
     /// Sabah özeti bildirimine dokunuldu → açılınca özeti oku
     @Published var briefRequested = false
-    static let briefPrompt = "Günün özetini ver: hava durumu, bugünkü programım (takvim ve hatırlatmalar), trafik, bu haftanın önemli işleri (önümüzdeki 7 gün, en fazla 3 tane, gün adıyla), Türkiye'den 3 ve dünyadan 2 önemli haber. Sesli okunacak; akıcı ve kısa anlat."
+    static let briefPrompt = "Günün özetini ver: hava durumu, bugünkü programım (takvim ve hatırlatmalar), trafik, bu haftanın önemli işleri (önümüzdeki 7 gün, en fazla 3 tane, gün adıyla), piyasa (dolar, euro, gram altın, gümüş: bugünkü fiyat ve dünden bu yana arttı mı azaldı mı, yüzdesiyle), ve haberler: sayı sınırı yok, Türkiye ve dünyadan gerçekten önemli olanları seç, sıradan olayları atla, her birini bir cümleyle anlat. Sesli okunacak; akıcı anlat, madde işareti kullanma."
 
     let speech = SpeechService()
     private let store = Store.shared
@@ -115,8 +115,13 @@ final class Assistant: ObservableObject {
             UserDefaults.standard.set(today, forKey: "autoBriefDay")
             if conversing { endConversation() }
             Task { @MainActor in
-                let traffic = await self.trafficLine()
-                self.send(Self.briefPrompt + (traffic.map { "\nTRAFİK: " + $0 } ?? ""), voice: true, display: "Günün özeti")
+                async let trafficTask = self.trafficLine()
+                async let marketTask = Self.marketLine()
+                let (traffic, market) = await (trafficTask, marketTask)
+                var prompt = Self.briefPrompt
+                if let traffic { prompt += "\nTRAFİK: " + traffic }
+                prompt += "\nPİYASA: " + (market ?? "Piyasa verisi alınamadı; bunu kısaca söyle, fiyat uydurma.")
+                self.send(prompt, voice: true, display: "Günün özeti")
             }
             return
         }
@@ -328,6 +333,25 @@ final class Assistant: ObservableObject {
     }
 
     // MARK: Gönder
+
+    /// 1.2.8: dolar, euro, gram altın, gümüş — bugünkü fiyat ve günlük değişim (finans.truncgil.com)
+    static func marketLine() async -> String? {
+        guard let url = URL(string: "https://finans.truncgil.com/today.json") else { return nil }
+        var req = URLRequest(url: url, timeoutInterval: 8)
+        req.setValue("Mozilla/5.0 JarvisMobile", forHTTPHeaderField: "User-Agent")
+        guard let result = try? await URLSession.shared.data(for: req),
+              let obj = (try? JSONSerialization.jsonObject(with: result.0)) as? [String: Any] else { return nil }
+        let wanted: [(String, String)] = [("USD", "Dolar"), ("EUR", "Euro"), ("gram-altin", "Gram altın"),
+                                          ("ceyrek-altin", "Çeyrek altın"), ("gumus", "Gümüş (gram)")]
+        var parts: [String] = []
+        for (key, label) in wanted {
+            guard let row = obj[key] as? [String: Any] else { continue }
+            let price = (row["Satış"] ?? row["Satis"] ?? row["Alış"]).map { "\($0)" } ?? "?"
+            let change = (row["Değişim"] ?? row["Degisim"]).map { "\($0)" } ?? ""
+            parts.append("\(label) \(price) TL" + (change.isEmpty ? "" : " (değişim \(change))"))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: "; ")
+    }
 
     /// Bugün yeri belli olan ilk (henüz başlamamış) randevuya canlı trafikle gidiş süresi (Apple Haritalar)
     private func trafficLine() async -> String? {
