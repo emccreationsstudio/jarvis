@@ -29,6 +29,10 @@ final class Assistant: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
 
     private init() {
+        // 1.2.9: Siri / Kısayollar "Jarvis'i Dinlet" → uygulama açıksa hemen dinle
+        NotificationCenter.default.addObserver(forName: .jarvisListenRequest, object: nil, queue: .main) { _ in
+            Task { @MainActor in Assistant.shared.listenRequested = true }
+        }
         // Konuşma durumundaki değişiklikler (canlı yazı, ses seviyesi) ekranı da güncellesin
         speech.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
@@ -98,6 +102,12 @@ final class Assistant: ObservableObject {
 
     func appBecameActive() {
         activeSince = Date()
+        // Siri isteği uygulama kapalıyken geldiyse (son 20 sn) dinlemeye başla
+        let siriAt = UserDefaults.standard.double(forKey: "siriListenAt")
+        if siriAt > 0, Date().timeIntervalSince1970 - siriAt < 20 {
+            UserDefaults.standard.removeObject(forKey: "siriListenAt")
+            listenRequested = true
+        }
         Task { await SyncService.shared.pull() }   // eşitleme açıksa bilgisayardaki değişiklikleri al
         sessionStart = Calendar.current.startOfDay(for: Date())
         store.housekeeping()                       // günlük listeleri sıfırla, eski çöpü at

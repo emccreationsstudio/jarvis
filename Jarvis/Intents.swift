@@ -7,19 +7,19 @@ struct ListenIntent: AppIntent {
     static var description = IntentDescription("Jarvis'i açar ve hemen dinlemeye başlar.")
     static var openAppWhenRun: Bool = true
 
+    /// 1.2.9: Siri tarafında hiçbir ağır iş yapılmaz (eskiden burada uygulamanın tamamı ayağa kalkıyordu;
+    /// Siri bazen zaman aşımına düşüp "Bir sorun oluştu" diyordu). Sadece "dinle" isteği bırakılır,
+    /// uygulama öne gelince dinlemeye başlar.
     @MainActor
     func perform() async throws -> some IntentResult {
-        Assistant.shared.listenRequested = true
-        // Uygulama zaten açıksa da tetiklensin
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-            if Assistant.shared.listenRequested, UIApplication.shared.applicationState == .active {
-                Assistant.shared.listenRequested = false
-                Assistant.shared.startListening()
-            }
-        }
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "siriListenAt")
+        NotificationCenter.default.post(name: .jarvisListenRequest, object: nil)
         return .result()
     }
+}
+
+extension Notification.Name {
+    static let jarvisListenRequest = Notification.Name("jarvisListenRequest")
 }
 
 /// "Hey Siri, Jarvis'e söyle" → söylenecek metni sorar ve Jarvis'e iletir
