@@ -134,6 +134,14 @@ final class SyncService {
         merged["moments"] = union(local["moments"], remote["moments"])
         merged["deleted"] = tomb
         merged["revived"] = revived
+        // 1.3.0: telefonun konumu bilgisayardaki Jarvis'e gider (hava durumu ve trafik oradan hesaplanır)
+        var locationChanged = false
+        if let loc = RouteService.shared.lastLocation() {
+            let at = Self.isoPlain.string(from: loc.timestamp)
+            merged["phoneLocation"] = ["lat": loc.coordinate.latitude, "lon": loc.coordinate.longitude,
+                                       "accuracy": loc.horizontalAccuracy, "at": at] as [String: Any]
+            locationChanged = ((remote["phoneLocation"] as? JSON)?["at"] as? String) != at
+        }
 
         // 5) Değişen bir şey varsa bu cihaza uygula
         var what: [String] = []
@@ -155,7 +163,7 @@ final class SyncService {
         let remoteDeleted = remote["deleted"] as? [String: String] ?? [:]
         let remoteRevived = remote["revived"] as? [String: String] ?? [:]
         let needPush = remoteStamp == nil || !same(merged, remote)
-            || remoteDeleted != tomb || remoteRevived != revived
+            || remoteDeleted != tomb || remoteRevived != revived || locationChanged
             || !same(merged["specials"], remote["specials"], Self.fMem)
             || !same(merged["moments"], remote["moments"], Self.fMem)
         if needPush {

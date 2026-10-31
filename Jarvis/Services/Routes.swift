@@ -64,14 +64,23 @@ final class RouteService: NSObject, CLLocationManagerDelegate {
         return found ?? fallback
     }
 
+    /// Son bilinen konum (bilgisayardaki Jarvis'e eşitlemeyle gider)
+    func lastLocation() -> CLLocation? {
+        guard hasLocation else { return nil }
+        return location.location
+    }
+
     /// Uygulama açılınca konumu bir kez tazele
     func refreshLocation() {
         guard hasLocation else { return }
-        location.desiredAccuracy = kCLLocationAccuracyKilometer
+        location.desiredAccuracy = kCLLocationAccuracyHundredMeters
         location.requestLocation()
     }
 
-    nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {}
+    nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        // 1.3.0: yeni konum gelince bilgisayara da gönder
+        Task { @MainActor in SyncService.shared.schedulePush() }
+    }
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {}
 
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
