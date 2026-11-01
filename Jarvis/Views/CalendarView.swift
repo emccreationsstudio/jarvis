@@ -73,6 +73,8 @@ private struct WeekPage: View {
     @State private var editingTask: TaskItem?
     @State private var addingOn: AddDay?
     @State private var deletingEvent: CalendarService.Event?
+    /// 1.3.1: Takvim ve hatırlatıcılar ayrı gösterilir
+    @AppStorage("calShowTasks") private var showTasks = false
 
     private var weekStart: Date {
         let base = trCal.dateInterval(of: .weekOfYear, for: Date())?.start ?? trCal.startOfDay(for: Date())
@@ -114,8 +116,24 @@ private struct WeekPage: View {
                 }
                 .buttonStyle(HUDButtonStyle())
 
+                HStack(spacing: 0) {
+                    ForEach([false, true], id: \.self) { tasks in
+                        Button { withAnimation(.easeInOut(duration: 0.2)) { showTasks = tasks } } label: {
+                            Label(tasks ? "Hatırlatıcılar" : "Takvim", systemImage: tasks ? "bell.fill" : "calendar")
+                                .font(.system(size: 13, weight: .semibold))
+                                .frame(maxWidth: .infinity).padding(.vertical, 8)
+                                .foregroundStyle(showTasks == tasks ? Color.black : .white.opacity(0.7))
+                                .background(showTasks == tasks ? Theme.glow : Color.clear)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Theme.glow.opacity(0.5), lineWidth: 1))
+
                 ForEach(days, id: \.self) { day in
-                    DayCard(day: day, events: events.filter { trCal.isDate($0.start, inSameDayAs: day) },
+                    DayCard(day: day, events: showTasks ? [] : events.filter { trCal.isDate($0.start, inSameDayAs: day) },
+                            showTasks: showTasks,
                             onEvent: { editingEvent = $0 }, onTask: { editingTask = $0 },
                             onAdd: { addingOn = AddDay(date: day) },
                             onDeleteEvent: { deletingEvent = $0 })
@@ -166,16 +184,17 @@ private struct DayCard: View {
     @EnvironmentObject var store: Store
     let day: Date
     let events: [CalendarService.Event]
+    var showTasks: Bool = false
     var onEvent: (CalendarService.Event) -> Void = { _ in }
     var onTask: (TaskItem) -> Void = { _ in }
     var onAdd: () -> Void = {}
     var onDeleteEvent: (CalendarService.Event) -> Void = { _ in }
 
     var body: some View {
-        let holidays = Holiday.between(day, day)
-        let specials = store.specials(on: day)
-        let moments = store.moments(on: day)
-        let tasks = store.tasks(on: day)
+        let holidays = showTasks ? [] : Holiday.between(day, day)
+        let specials = showTasks ? [] : store.specials(on: day)
+        let moments = showTasks ? [] : store.moments(on: day)
+        let tasks = showTasks ? store.tasks(on: day) : []
         let isToday = trCal.isDateInToday(day)
         let empty = holidays.isEmpty && specials.isEmpty && moments.isEmpty && tasks.isEmpty && events.isEmpty
 
