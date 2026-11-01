@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Takvim sekmesinin sayfaları (Jarvis "takvimi göster" diyerek de açabilir)
 enum CalendarPage: String, CaseIterable {
@@ -119,7 +120,7 @@ private struct WeekPage: View {
                             onAdd: { addingOn = AddDay(date: day) },
                             onDeleteEvent: { deletingEvent = $0 })
                 }
-                Text("Etkinliğe ya da göreve dokun: düzenle, ertele, sil. Basılı tutunca hızlı menü açılır, günün yanındaki + ile o güne ekle. Jarvis'e \"yarınki toplantıyı 3'e al\" da diyebilirsin.")
+                Text("Etkinliğe ya da göreve dokun: düzenle, ertele. Sola kaydırınca silinir. Basılı tutunca hızlı menü açılır, günün yanındaki + ile o güne ekle. Jarvis'e \"yarınki toplantıyı 3'e al\" da diyebilirsin.")
                     .font(.caption2).foregroundStyle(.white.opacity(0.4))
                     .multilineTextAlignment(.center)
                 if !CalendarService.shared.hasAccess {
@@ -213,6 +214,7 @@ private struct DayCard: View {
                           title: e.title, detail: e.location, color: Theme.glow, icon: "calendar")
                     .contentShape(Rectangle())
                     .onTapGesture { if e.id != nil { onEvent(e) } }
+                    .modifier(SwipeToDelete(enabled: e.id != nil && e.editable) { onDeleteEvent(e) })
                     .contextMenu {
                         if e.id != nil {
                             Button { onEvent(e) } label: { Label(e.editable ? "Düzenle / ertele" : "Aç", systemImage: "pencil") }
@@ -230,6 +232,7 @@ private struct DayCard: View {
                     .opacity(t.done ? 0.5 : 1)
                     .contentShape(Rectangle())
                     .onTapGesture { onTask(t) }
+                    .modifier(SwipeToDelete { store.delete(taskID: t.id) })
                     .contextMenu {
                         Button { onTask(t) } label: { Label("Düzenle / ertele", systemImage: "pencil") }
                         Button {
@@ -249,6 +252,62 @@ private struct DayCard: View {
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(isToday ? Theme.glow.opacity(0.7) : .clear, lineWidth: 1.2)
+        )
+    }
+}
+
+/// 1.3.1: Sola kaydır → kırmızı çöp düğmesi çıkar (dokununca siler); sonuna kadar kaydırınca doğrudan siler.
+/// Takvim etkinliğinde yine "silinsin mi?" diye sorulur; hatırlatmalar çöp kutusuna gider (geri alınabilir).
+private struct SwipeToDelete: ViewModifier {
+    var enabled: Bool = true
+    var onDelete: () -> Void
+    @State private var offset: CGFloat = 0
+    @State private var start: CGFloat = 0
+    @State private var horizontal: Bool?
+    private let reveal: CGFloat = 72
+    private let fullSwipe: CGFloat = 190
+
+    func body(content: Content) -> some View {
+        ZStack(alignment: .trailing) {
+            if offset < 0 {
+                Button {
+                    withAnimation(.spring(duration: 0.25)) { offset = 0; start = 0 }
+                    onDelete()
+                } label: {
+                    Image(systemName: "trash.fill")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: max(reveal, -offset))
+                        .frame(maxHeight: .infinity)
+                        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.red))
+                }
+                .buttonStyle(.plain)
+                .frame(width: -offset)
+                .clipped()
+                .accessibilityLabel("Sil")
+            }
+            content.offset(x: offset)
+        }
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 14)
+                .onChanged { v in
+                    if horizontal == nil { horizontal = abs(v.translation.width) > abs(v.translation.height) * 1.3 }
+                    guard horizontal == true else { return }
+                    offset = min(0, start + v.translation.width)
+                }
+                .onEnded { _ in
+                    defer { horizontal = nil }
+                    guard horizontal == true else { return }
+                    if offset < -fullSwipe {
+                        withAnimation(.spring(duration: 0.25)) { offset = 0; start = 0 }
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        onDelete()
+                    } else {
+                        withAnimation(.spring(duration: 0.25)) { offset = offset < -reveal / 2 ? -reveal : 0 }
+                        start = offset
+                    }
+                },
+            including: enabled ? .all : .subviews
         )
     }
 }
