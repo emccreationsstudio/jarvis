@@ -117,6 +117,7 @@ struct SettingsView: View {
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                         SecureField("Uygulama şifresi", text: $settings.token)
+                            .textInputAutocapitalization(.never)
                         Button {
                             testing = true
                             Task {

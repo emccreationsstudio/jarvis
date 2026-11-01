@@ -34,6 +34,8 @@ struct JarvisApp: App {
                 .environmentObject(assistant)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
+                // 1.3.1: bütün yazı alanlarında klavye büyük harfle açılır (sunucu adresi/şifre hariç)
+                .textInputAutocapitalization(.characters)
         }
     }
 }
