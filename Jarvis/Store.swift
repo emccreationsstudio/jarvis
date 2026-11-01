@@ -111,7 +111,13 @@ final class Store: ObservableObject {
         return dir.appendingPathComponent("jarvis-data.json")
     }()
 
-    private init() { load() }
+    private init() {
+        load()
+        // 1.3.0: tiklenen liste maddelerini 5 dk sonra silmek için uygulama açıkken 30 sn'de bir bak
+        Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in
+            Task { @MainActor in Store.shared.sweepDoneItems() }
+        }
+    }
 
     private func load() {
         loading = true
@@ -527,12 +533,57 @@ final class Store: ObservableObject {
         if trash.contains(where: { $0.deletedAt < limit }) { trash.removeAll { $0.deletedAt < limit } }
         resetDailyLists()
         clearYesterdaysDone()
+        sweepDoneItems()
     }
 
-    /// 1.2.5: Üstü çizilen (tamamlanan) görevler ertesi gün kendiliğinden çöp kutusuna gider.
-    /// Gün içinde işaret kaldırılırsa görev kalır.
+    /// 1.3.0: Liste/alışveriş maddesi tiklendikten 5 dakika içinde geri alınmazsa silinir (çöp kutusuna gider,
+    /// eşitleme bilgisayara da bildirir). Tekrarlayan listeler (günlük ilaç, aylık ödeme) hariç.
+    func sweepDoneItems() {
+        let key = "doneSeenAt"
+        let now = Date().timeIntervalSince1970
+        var seen = (UserDefaults.standard.dictionary(forKey: key) as? [String: Double]) ?? [:]
+        var stillDone = Set<String>()
+        var gone: [TrashEntry] = []
+        func expired(_ id: String) -> Bool {
+            let first = seen[id] ?? now
+            seen[id] = first
+            if now - first >= 300 { return true }
+            stillDone.insert(id)
+            return false
+        }
+
+        var newLists = lists
+        var listsChanged = false
+        for i in newLists.indices where !newLists[i].isRepeating {
+            let lid = newLists[i].id, lname = newLists[i].name
+            let old = newLists[i].items
+            let kept = old.filter { it in
+                guard it.done, expired(it.id) else { return true }
+                gone.append(TrashEntry(kind: .listItem, listItem: it, listID: lid, listName: lname))
+                return false
+            }
+            if kept.count != old.count { newLists[i].items = kept; listsChanged = true }
+        }
+        let keptShop = shopping.filter { it in
+            guard it.done, expired(it.id) else { return true }
+            gone.append(TrashEntry(kind: .shopping, shopping: it))
+            return false
+        }
+
+        seen = seen.filter { stillDone.contains($0.key) }
+        UserDefaults.standard.set(seen, forKey: key)
+        guard !gone.isEmpty else { return }
+        var t = trash
+        t.insert(contentsOf: gone, at: 0)
+        if t.count > 300 { t = Array(t.prefix(300)) }
+        trash = t
+        if listsChanged { lists = newLists }
+        if keptShop.count != shopping.count { shopping = keptShop }
+    }
+
+    /// 1.3.0: Tamamlanan görevler 3 gün "yapıldı" olarak durur, sonra kendiliğinden çöp kutusuna gider.
     func clearYesterdaysDone() {
-        let start = Calendar.current.startOfDay(for: Date())
+        let start = Calendar.current.startOfDay(for: Date()).addingTimeInterval(-2 * 86400)
         let old = tasks.filter { $0.done && ($0.doneAt ?? $0.createdAt) < start }
         guard !old.isEmpty else { return }
         var t = trash

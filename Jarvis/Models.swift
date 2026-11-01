@@ -103,6 +103,16 @@ struct CustomList: Codable, Identifiable, Equatable {
     var createdAt: Date = Date()
     /// Günlük listenin en son sıfırlandığı gün (yyyy-MM-dd)
     var lastReset: String?
+    /// 1.3.0: bilgisayardaki tekrar türü ("daily" / "monthly" / "yearly"); doluysa liste tekrarlayandır
+    var repeatMode: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, icon, daily, items, createdAt, lastReset
+        case repeatMode = "repeat"
+    }
+
+    /// Tekrarlayan liste (günlük ilaç, aylık ödeme…): işaretler silinmez, dönem başında sıfırlanır
+    var isRepeating: Bool { daily || !(repeatMode ?? "").isEmpty }
 
     var openCount: Int { items.filter { !$0.done }.count }
 
@@ -131,6 +141,7 @@ extension CustomList {
         items = try c.decodeIfPresent([ListItem].self, forKey: .items) ?? []
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         lastReset = try c.decodeIfPresent(String.self, forKey: .lastReset)
+        repeatMode = try c.decodeIfPresent(String.self, forKey: .repeatMode)
     }
 }
 
