@@ -65,7 +65,7 @@ final class CalendarService {
     func update(id: String, title: String?, start: Date?, end: Date?, location: String?) async -> Bool {
         guard await requestAccess(), let e = store.event(withIdentifier: id),
               e.calendar?.allowsContentModifications ?? false else { return false }
-        if let title, !title.trimmingCharacters(in: .whitespaces).isEmpty { e.title = title }
+        if let title, !title.trimmingCharacters(in: .whitespaces).isEmpty { e.title = Store.upperTR(title) }
         if let start {
             let duration = e.endDate.timeIntervalSince(e.startDate)
             e.startDate = start
@@ -73,7 +73,7 @@ final class CalendarService {
         } else if let end {
             e.endDate = end
         }
-        if let location { e.location = location.isEmpty ? nil : location }
+        if let location { e.location = location.isEmpty ? nil : Store.upperTR(location) }
         do {
             try store.save(e, span: .thisEvent)
             return true
@@ -127,11 +127,11 @@ final class CalendarService {
         else { return false }
         let event = EKEvent(eventStore: store)
         event.calendar = calendar
-        event.title = title
+        event.title = Store.upperTR(title)
         event.isAllDay = allDay
         event.startDate = start
         event.endDate = end ?? start.addingTimeInterval(60 * 60)
-        if let location, !location.isEmpty { event.location = location }
+        if let location, !location.isEmpty { event.location = Store.upperTR(location) }
         event.addAlarm(EKAlarm(relativeOffset: important ? -60 * 60 : -30 * 60))
         do {
             try store.save(event, span: .thisEvent)

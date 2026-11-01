@@ -209,6 +209,8 @@ final class Store: ObservableObject {
     }
 
     func upsert(_ task: TaskItem) {
+        var task = task
+        task.title = Self.upperTR(task.title)
         if let i = tasks.firstIndex(where: { $0.id == task.id }) { tasks[i] = task } else { tasks.append(task) }
         Reminders.shared.schedule(task)
     }
@@ -262,10 +264,11 @@ final class Store: ObservableObject {
     private static func key(_ s: String) -> String {
         s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(with: tr)
     }
+    /// 1.3.1: her şey büyük harfle (Türkçe: i → İ)
     private static func capitalized(_ s: String) -> String {
-        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
-        return t.prefix(1).uppercased(with: tr) + t.dropFirst()
+        s.trimmingCharacters(in: .whitespacesAndNewlines).uppercased(with: tr)
     }
+    nonisolated static func upperTR(_ s: String) -> String { s.uppercased(with: Locale(identifier: "tr_TR")) }
     /// "domates" ↔ "Domates", "süt" ↔ "2 süt" gibi gevşek eşleşme
     private static func loose(_ a: String, _ b: String) -> Bool {
         let x = key(a), y = key(b)
