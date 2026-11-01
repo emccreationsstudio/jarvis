@@ -364,18 +364,33 @@ final class Assistant: ObservableObject {
     }
 
     /// Bugün yeri belli olan ilk (henüz başlamamış) randevuya canlı trafikle gidiş süresi (Apple Haritalar)
+    /// 1.3.1: randevu olmasa da sık gidilen yerlere canlı süreler (Apple Haritalar) verilir.
     private func trafficLine() async -> String? {
         let now = Date()
-        guard let ev = CalendarService.shared.upcoming(days: 1).first(where: {
+        var parts: [String] = []
+        if let ev = CalendarService.shared.upcoming(days: 1).first(where: {
             $0.start > now && !($0.location ?? "").trimmingCharacters(in: .whitespaces).isEmpty
-        }), let loc = ev.location else {
-            return "Bugün yeri belli bir randevu yok; genel İstanbul trafiğini kısaca söyle (biliyorsan)."
+        }), let loc = ev.location {
+            let time = ev.start.formatted(date: .omitted, time: .shortened)
+            if let r = await RouteService.shared.route(from: nil, to: loc) {
+                parts.append("\(time) \(ev.title) randevusu için: \(r.summary). Ne zaman çıkması gerektiğini öner.")
+            } else {
+                parts.append("\(time) \(ev.title) (\(loc)) için yol süresi hesaplanamadı.")
+            }
         }
-        let time = ev.start.formatted(date: .omitted, time: .shortened)
-        guard let r = await RouteService.shared.route(from: nil, to: loc) else {
-            return "\(time) \(ev.title) (\(loc)) için yol süresi hesaplanamadı."
+        if let general = await RouteService.shared.generalTraffic() {
+            parts.append("Genel yoğunluk (canlı, Apple Haritalar): " + general)
         }
-        return "\(time) \(ev.title) randevusu için: \(r.summary). Ne zaman çıkması gerektiğini öner."
+        if parts.isEmpty {
+            return "Trafik verisi alınamadı (konum izni ya da internet olabilir); bunu kısaca söyle, tahmin uydurma."
+        }
+        return parts.joined(separator: " ")
+    }
+
+    /// "Trafik nasıl", "yollar nasıl" gibi genel sorular — canlı veriyi telefon hesaplayıp mesaja ekler.
+    static func isTrafficQuestion(_ text: String) -> Bool {
+        let t = text.lowercased(with: Locale(identifier: "tr_TR"))
+        return ["trafik", "yollar nasıl", "yol durumu", "yollar açık", "yollar kapalı", "yoğunluk"].contains { t.contains($0) }
     }
 
     func send(_ raw: String, voice: Bool = false, display: String? = nil) {
@@ -411,7 +426,13 @@ final class Assistant: ObservableObject {
         inflight = Task { [weak self] in
             guard let self else { return }
             do {
-                let response = try await self.request(text, voice: voice,
+                var outgoing = text
+                if display == nil, Self.isTrafficQuestion(text), let live = await RouteService.shared.generalTraffic() {
+                    outgoing += "\n\n[CANLI TRAFİK VERİSİ — telefon Apple Haritalar'dan şimdi hesapladı; web araması yapma, bunu kullan. "
+                        + "Belirli bir yer sorulduysa get_route da kullanabilirsin.]\n" + live
+                }
+                guard !Task.isCancelled else { return }
+                let response = try await self.request(outgoing, voice: voice,
                                                       images: images.isEmpty ? nil : images,
                                                       document: docText.isEmpty ? nil : docText)
                 guard !Task.isCancelled else { return }

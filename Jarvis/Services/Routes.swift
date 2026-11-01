@@ -117,9 +117,13 @@ final class RouteService: NSObject, CLLocationManagerDelegate {
             guard let o = await search(origin) else { return nil }
             originItem = o
             req.source = o
+        } else if let here = await preciseLocation() {
+            // 1.3.1: konum hazır değilken forCurrentLocation sessizce başarısız oluyordu → koordinatı açıkça ver
+            req.source = MKMapItem(placemark: MKPlacemark(coordinate: here.coordinate))
+        } else if let home = await search(Self.homeAddress) {
+            req.source = home                          // konum izni yoksa evden hesapla
         } else {
-            guard hasLocation else { return nil }
-            req.source = MKMapItem.forCurrentLocation()
+            return nil
         }
         req.destination = dest
         req.transportType = .automobile
@@ -143,6 +147,60 @@ final class RouteService: NSObject, CLLocationManagerDelegate {
         }
         text += "."
         return Result(summary: text, destination: dest, origin: originItem)
+    }
+
+    // MARK: 1.3.1 Genel trafik (randevu olmasa da)
+
+    static let homeAddress = "Üsküdar, İstanbul"
+    static let commonPlaces = ["Beşiktaş, İstanbul", "Maslak, Sarıyer, İstanbul", "Kadıköy, İstanbul"]
+
+    /// Şu anki konumdan (yoksa evden) sık gidilen yerlere canlı süre + trafiksiz süre.
+    /// Örnek: "Konum: Ataşehir. Maslak: şu an 42 dk, trafiksiz ~20 dk (yoğun). ..."
+    func generalTraffic() async -> String? {
+        await requestPermission()
+        var source: MKMapItem?
+        var fromText = "ev (Üsküdar)"
+        if let here = await preciseLocation() {
+            source = MKMapItem(placemark: MKPlacemark(coordinate: here.coordinate))
+            if let p = try? await CLGeocoder().reverseGeocodeLocation(here, preferredLocale: Locale(identifier: "tr_TR")).first {
+                fromText = [p.subLocality, p.locality].compactMap { $0 }.joined(separator: ", ")
+                if fromText.isEmpty { fromText = "şu anki konum" }
+            } else {
+                fromText = "şu anki konum"
+            }
+        } else {
+            source = await search(Self.homeAddress)
+        }
+        guard let source else { return nil }
+
+        var lines: [String] = []
+        for place in Self.commonPlaces {
+            guard let dest = await search(place) else { continue }
+            if let a = source.placemark.location, let b = dest.placemark.location, a.distance(from: b) < 2500 { continue }
+            guard let now = await eta(from: source, to: dest, at: Date()) else { continue }
+            let name = place.components(separatedBy: ",").first ?? place
+            var line = "\(name): şu an \(Self.duration(now))"
+            // Gece 03:00 tahmini ≈ trafiksiz süre → yoğunluğu anlamak için
+            var night = Calendar.current.date(bySettingHour: 3, minute: 0, second: 0, of: Date()) ?? Date()
+            if night < Date() { night = night.addingTimeInterval(86_400) }
+            if let free = await eta(from: source, to: dest, at: night), free > 60 {
+                let ratio = now / free
+                let level = ratio >= 1.6 ? "çok yoğun" : ratio >= 1.25 ? "yoğun" : "akıcı"
+                line += ", trafiksiz ~\(Self.duration(free)) (\(level))"
+            }
+            lines.append(line)
+        }
+        guard !lines.isEmpty else { return nil }
+        return "Çıkış: \(fromText). " + lines.joined(separator: ". ") + "."
+    }
+
+    private func eta(from: MKMapItem, to: MKMapItem, at date: Date) async -> TimeInterval? {
+        let req = MKDirections.Request()
+        req.source = from
+        req.destination = to
+        req.transportType = .automobile
+        req.departureDate = date
+        return try? await MKDirections(request: req).calculateETA().expectedTravelTime
     }
 
     func openInMaps(_ result: Result) {
