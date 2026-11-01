@@ -557,7 +557,8 @@ final class Store: ObservableObject {
 
         var newLists = lists
         var listsChanged = false
-        for i in newLists.indices where !newLists[i].isRepeating {
+        for i in newLists.indices where !newLists[i].isRepeating
+            && newLists[i].name.lowercased(with: Locale(identifier: "tr_TR")) != "görevler" {   // Görevler 3 gün kalır
             let lid = newLists[i].id, lname = newLists[i].name
             let old = newLists[i].items
             let kept = old.filter { it in
